@@ -1,0 +1,12 @@
+find_package(CURL REQUIRED)
+
+add_library(clove_integrations STATIC
+    src/openrouter.cpp
+)
+target_include_directories(clove_integrations PUBLIC include)
+target_link_libraries(clove_integrations PUBLIC
+    clove_core
+    nlohmann_json::nlohmann_json
+    CURL::libcurl
+)
+target_compile_features(clove_integrations PUBLIC cxx_std_23)

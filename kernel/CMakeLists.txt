@@ -16,6 +16,7 @@ target_link_libraries(clove_kernel PRIVATE
     clove_agents
     clove_orchestration
     clove_governance
+    clove_integrations
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     OpenSSL::SSL

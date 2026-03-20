@@ -19,6 +19,7 @@
 #include <clove/policy_watcher.hpp>
 #include <clove/policy_recommender.hpp>
 #include <clove/manifest.hpp>
+#include <clove/openrouter.hpp>
 
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -77,6 +78,76 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
         inference_gateway_->configure(gw_config);
     }
 
+    // Configure OpenRouter as LLM backend
+    if (config.openrouter_enabled && !config.openrouter_api_key.empty()) {
+        auto openrouter = std::make_shared<OpenRouterClient>();
+        OpenRouterConfig or_config;
+        or_config.api_key = config.openrouter_api_key;
+        or_config.base_url = config.openrouter_base_url;
+        or_config.default_model = config.llm_model;
+        openrouter->configure(or_config);
+
+        // Set as LLM queue backend — every SYS_THINK goes through OpenRouter
+        llm_queue_->set_backend([openrouter, this](uint32_t agent_id, const std::string& prompt) -> std::string {
+            // Determine model (from config or agent request)
+            std::string model = config_.llm_model;
+
+            // PII filter before sending
+            if (privacy_filter_->is_enabled()) {
+                auto result = privacy_filter_->redact(prompt);
+                if (privacy_filter_->mode() == PrivacyMode::BLOCK && !result.matches.empty()) {
+                    nlohmann::json err;
+                    err["success"] = false;
+                    err["error"] = "PII detected in prompt, blocked by privacy policy";
+                    err["pii_types"] = nlohmann::json::array();
+                    for (const auto& m : result.matches) {
+                        err["pii_types"].push_back(m.type_name);
+                    }
+                    return err.dump();
+                }
+
+                // Use redacted prompt
+                auto response = openrouter->chat(model, result.cleaned_text);
+
+                // Record cost
+                if (response.success) {
+                    inference_gateway_->record_cost(response.usage.cost_usd);
+                }
+
+                nlohmann::json j;
+                j["success"] = response.success;
+                j["content"] = response.content;
+                j["tokens"] = response.usage.total_tokens;
+                j["cost_usd"] = response.usage.cost_usd;
+                j["model"] = response.model_used;
+                if (!response.success) j["error"] = response.error;
+                if (!result.matches.empty()) {
+                    j["pii_redacted"] = result.matches.size();
+                }
+                return j.dump();
+            }
+
+            // No PII filter — send directly
+            auto response = openrouter->chat(model, prompt);
+
+            if (response.success) {
+                inference_gateway_->record_cost(response.usage.cost_usd);
+            }
+
+            nlohmann::json j;
+            j["success"] = response.success;
+            j["content"] = response.content;
+            j["tokens"] = response.usage.total_tokens;
+            j["cost_usd"] = response.usage.cost_usd;
+            j["model"] = response.model_used;
+            if (!response.success) j["error"] = response.error;
+            return j.dump();
+        });
+
+        spdlog::info("OpenRouter configured: {} (model: {})",
+            config.openrouter_base_url, config.llm_model);
+    }
+
     // Configure privacy filter
     if (config.privacy_enabled) {
         PrivacyFilterConfig pf_config;
@@ -133,7 +204,8 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
                 {"policy_hot_reload", true},
                 {"mcp_bridge", false},
                 {"a2a_bridge", false},
-                {"otel_export", false}
+                {"otel_export", false},
+                {"openrouter", false}
             };
             return Message::create(msg.header.agent_id, SyscallOp::SYS_HELLO, response.dump());
         });
