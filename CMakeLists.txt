@@ -44,3 +44,8 @@ add_subdirectory(libs/reactor)
 add_subdirectory(libs/ipc)
 add_subdirectory(libs/sandbox)
 add_subdirectory(libs/agents)
+add_subdirectory(libs/orchestration)
+add_subdirectory(libs/governance)
+
+# Binaries
+add_subdirectory(kernel)
