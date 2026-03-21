@@ -38,6 +38,12 @@ endif()
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
+FetchContent_Declare(httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.15.3
+)
+FetchContent_MakeAvailable(httplib)
+
 # Libraries (build order = dependency order)
 add_subdirectory(libs/core)
 add_subdirectory(libs/reactor)
@@ -47,6 +53,14 @@ add_subdirectory(libs/agents)
 add_subdirectory(libs/orchestration)
 add_subdirectory(libs/governance)
 add_subdirectory(libs/integrations)
+add_subdirectory(libs/worlds)
+add_subdirectory(libs/api)
+add_subdirectory(libs/persistence)
 
 # Binaries
 add_subdirectory(kernel)
+add_subdirectory(cli)
+
+# Tests
+enable_testing()
+add_subdirectory(tests)

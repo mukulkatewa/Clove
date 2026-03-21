@@ -55,12 +55,18 @@ const char* PrivacyFilter::mode_to_string(PrivacyMode m) {
 // ---------------------------------------------------------------------------
 
 PrivacyFilter::PrivacyFilter() {
-    build_patterns();
+    // Patterns are compiled lazily — only when configure() is called with
+    // enabled=true.  This avoids ~1 MB of std::regex DFA compilation at boot
+    // when privacy filtering is not requested.
 }
 
 void PrivacyFilter::configure(const PrivacyFilterConfig& config) {
     config_ = config;
-    build_patterns();
+    if (config_.enabled) {
+        build_patterns();
+    } else {
+        patterns_.clear();
+    }
 }
 
 void PrivacyFilter::build_patterns() {

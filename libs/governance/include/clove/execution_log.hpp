@@ -2,6 +2,7 @@
 
 #include <clove/protocol.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -58,7 +59,7 @@ public:
 
 private:
     mutable std::mutex              mutex_;
-    RecordingState                  recording_state_ = RecordingState::IDLE;
+    std::atomic<RecordingState>     recording_state_{RecordingState::IDLE};
     RecordingConfig                 config_;
     std::vector<ExecutionLogEntry>  entries_;
     uint64_t                        next_sequence_ = 1;

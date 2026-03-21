@@ -1,0 +1,103 @@
+{
+  "timestamp": "2026-03-20T21:41:39Z",
+  "suite": "v1-vs-v2",
+  "system": {
+    "os": "Darwin arm64",
+    "cpu": "Apple M5",
+    "ram_gb": 24
+  },
+  "binaries": {
+    "v1": "/Users/anixd/Documents/Clove/build/clove_kernel",
+    "v2": "/Users/anixd/Documents/clove-v2/build/kernel/clove_kernel",
+    "v1_size_bytes": 2191872,
+    "v2_size_bytes": 1122336
+  },
+  "results": [
+    {
+      "test": "Cold Start",
+      "v1": 7.4,
+      "v2": 7.3,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.0x",
+      "notes": ""
+    },
+    {
+      "test": "Idle Memory",
+      "v1": 2.78,
+      "v2": 6.45,
+      "unit": "MB",
+      "winner": "v1",
+      "speedup": "0.4x",
+      "notes": ""
+    },
+    {
+      "test": "IPC Latency (avg)",
+      "v1": 0.019,
+      "v2": 0.012,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.57x",
+      "notes": "v1 p99=0.039ms, v2 p99=0.028ms"
+    },
+    {
+      "test": "Throughput (seq)",
+      "v1": 91677.0,
+      "v2": 76592.0,
+      "unit": "ops/s",
+      "winner": "v1",
+      "speedup": "0.84x",
+      "notes": ""
+    },
+    {
+      "test": "Throughput (burst)",
+      "v1": 257873.0,
+      "v2": 272280.0,
+      "unit": "ops/s",
+      "winner": "v2",
+      "speedup": "1.06x",
+      "notes": ""
+    },
+    {
+      "test": "One-Shot IPC",
+      "v1": 0.03,
+      "v2": 0.03,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.02x",
+      "notes": ""
+    },
+    {
+      "test": "SYS_LIST Latency",
+      "v1": 0.034,
+      "v2": 0.029,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.18x",
+      "notes": ""
+    },
+    {
+      "test": "Shutdown Time",
+      "v1": 1.4,
+      "v2": 4.0,
+      "unit": "ms",
+      "winner": "v1",
+      "speedup": "0.4x",
+      "notes": ""
+    },
+    {
+      "test": "Binary Size",
+      "v1": 2.09,
+      "v2": 1.07,
+      "unit": "MB",
+      "winner": "v2",
+      "speedup": "2.0x",
+      "notes": ""
+    }
+  ],
+  "summary": {
+    "v1_wins": 3,
+    "v2_wins": 6,
+    "ties": 0
+  }
+}

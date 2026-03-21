@@ -1,0 +1,167 @@
+{
+  "timestamp": "2026-03-20T21:53:51Z",
+  "suite": "v1-vs-v2-comprehensive",
+  "system": {
+    "os": "Darwin arm64",
+    "cpu": "Apple M5",
+    "ram_gb": 24
+  },
+  "binaries": {
+    "v1": "/Users/anixd/Documents/Clove/build/clove_kernel",
+    "v2": "/Users/anixd/Documents/clove-v2/build/kernel/clove_kernel",
+    "v1_bytes": 2191872,
+    "v2_bytes": 1122336
+  },
+  "results": [
+    {
+      "test": "Cold Start",
+      "v1": 4.9,
+      "v2": 5.0,
+      "unit": "ms",
+      "winner": "v1",
+      "speedup": "0.99x",
+      "notes": "",
+      "category": "startup"
+    },
+    {
+      "test": "Idle Memory",
+      "v1": 2.78,
+      "v2": 6.47,
+      "unit": "MB",
+      "winner": "v1",
+      "speedup": "0.43x",
+      "notes": "v2 +3.7MB (PrivacyFilter regex, 16 worker threads, more subsystems)",
+      "category": "startup"
+    },
+    {
+      "test": "Memory (5K calls)",
+      "v1": 2.88,
+      "v2": 6.47,
+      "unit": "MB",
+      "winner": "v1",
+      "speedup": "0.44x",
+      "notes": "v2 execution_logger records every call (strings + mutex)",
+      "category": "startup"
+    },
+    {
+      "test": "Binary Size",
+      "v1": 2.09,
+      "v2": 1.07,
+      "unit": "MB",
+      "winner": "v2",
+      "speedup": "1.95x",
+      "notes": "v2 modular but smaller \u2014 less code linked",
+      "category": "startup"
+    },
+    {
+      "test": "NOOP Latency",
+      "v1": 0.0203,
+      "v2": 0.0199,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.02x",
+      "notes": "v2 hot path: +chrono::now x2, +mutex, +execution_logger per call",
+      "category": "latency"
+    },
+    {
+      "test": "LIST Latency",
+      "v1": 0.0237,
+      "v2": 0.0093,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "2.57x",
+      "notes": "",
+      "category": "latency"
+    },
+    {
+      "test": "State Store RT",
+      "v1": 0.019,
+      "v2": 0.0175,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.09x",
+      "notes": "",
+      "category": "latency"
+    },
+    {
+      "test": "One-Shot IPC",
+      "v1": 0.016,
+      "v2": 0.014,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.08x",
+      "notes": "",
+      "category": "latency"
+    },
+    {
+      "test": "Throughput (seq)",
+      "v1": 113119,
+      "v2": 111068,
+      "unit": "ops/s",
+      "winner": "v1",
+      "speedup": "0.98x",
+      "notes": "v2 slower: execution_logger mutex+record on every call",
+      "category": "throughput"
+    },
+    {
+      "test": "Throughput (burst)",
+      "v1": 451624,
+      "v2": 422449,
+      "unit": "ops/s",
+      "winner": "v1",
+      "speedup": "0.94x",
+      "notes": "",
+      "category": "throughput"
+    },
+    {
+      "test": "Throughput (mixed)",
+      "v1": 105047,
+      "v2": 106006,
+      "unit": "ops/s",
+      "winner": "v2",
+      "speedup": "1.01x",
+      "notes": "Interleaved NOOP/LIST/STORE/FETCH \u2014 realistic workload",
+      "category": "throughput"
+    },
+    {
+      "test": "Throughput (4-conn)",
+      "v1": 82033,
+      "v2": 81466,
+      "unit": "ops/s",
+      "winner": "v1",
+      "speedup": "0.99x",
+      "notes": "Tests reactor scalability under concurrent load",
+      "category": "throughput"
+    },
+    {
+      "test": "Latency @100KB",
+      "v1": 0.1728,
+      "v2": 0.1747,
+      "unit": "ms",
+      "winner": "v1",
+      "speedup": "0.99x",
+      "notes": "0B: v1=0.0090 v2=0.0090  100KB: v1=0.1728 v2=0.1747",
+      "category": "payload"
+    },
+    {
+      "test": "Shutdown",
+      "v1": 1.3,
+      "v2": 1.3,
+      "unit": "ms",
+      "winner": "v2",
+      "speedup": "1.00x",
+      "notes": "v2 joins 16 worker threads (8 LLM + 8 async); v1 joins 8 in dtor",
+      "category": "shutdown"
+    }
+  ],
+  "summary": {
+    "v1_wins": 7,
+    "v2_wins": 7,
+    "total": 14
+  },
+  "root_causes": {
+    "memory": "PrivacyFilter 5x std::regex compile at boot (~1MB), 16 subsystems vs v1 lighter init",
+    "throughput": "v2 handle_message() wraps every syscall with chrono timing + execution_logger->record() (mutex + string copies). v1 is a trivial passthrough: return syscall_router_->handle(msg)",
+    "shutdown": "v2 explicitly calls llm_queue_->shutdown() + async_tasks_->shutdown() joining 16 threads. v1 only joins LLM threads in destructor"
+  }
+}

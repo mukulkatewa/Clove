@@ -20,6 +20,14 @@
 #include <clove/policy_recommender.hpp>
 #include <clove/manifest.hpp>
 #include <clove/openrouter.hpp>
+#include <clove/database.hpp>
+#include <clove/audit_store.hpp>
+#include <clove/state_store_db.hpp>
+#include <clove/mcp_bridge.hpp>
+#include <clove/a2a_bridge.hpp>
+#include <clove/tunnel_bridge.hpp>
+#include <clove/world_engine.hpp>
+#include <clove/api_server.hpp>
 
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -210,7 +218,43 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
             return Message::create(msg.header.agent_id, SyscallOp::SYS_HELLO, response.dump());
         });
 
-    // Register module syscall handlers
+    // Instantiate and register all syscall modules
+    modules_.push_back(std::make_unique<StateSyscalls>(*context_));
+    modules_.push_back(std::make_unique<IpcSyscalls>(*context_));
+    modules_.push_back(std::make_unique<EventSyscalls>(*context_));
+    modules_.push_back(std::make_unique<PermissionSyscalls>(*context_));
+    modules_.push_back(std::make_unique<AuditSyscalls>(*context_));
+    modules_.push_back(std::make_unique<LlmSyscalls>(*context_));
+    modules_.push_back(std::make_unique<PiiSyscalls>(*context_));
+    modules_.push_back(std::make_unique<ReplaySyscalls>(*context_, syscall_router_.get()));
+    modules_.push_back(std::make_unique<AgentSyscalls>(*context_));
+    modules_.push_back(std::make_unique<AsyncSyscalls>(*context_));
+    modules_.push_back(std::make_unique<NetworkSyscalls>(*context_));
+    modules_.push_back(std::make_unique<FileIoSyscalls>(*context_));
+    modules_.push_back(std::make_unique<MetricsSyscalls>(*context_));
+
+    // MCP bridge
+    if (config.mcp_enabled) {
+        mcp_bridge_ = std::make_unique<McpBridge>();
+    }
+    modules_.push_back(std::make_unique<McpSyscalls>(*context_, mcp_bridge_.get()));
+
+    // A2A bridge
+    if (config.a2a_enabled) {
+        a2a_bridge_ = std::make_unique<A2aBridge>();
+    }
+    modules_.push_back(std::make_unique<A2aSyscalls>(*context_, a2a_bridge_.get()));
+    modules_.push_back(std::make_unique<OtelSyscalls>(*context_));
+    modules_.push_back(std::make_unique<CredsSyscalls>(*context_));
+
+    // Tunnel bridge
+    tunnel_bridge_ = std::make_unique<TunnelBridge>();
+    modules_.push_back(std::make_unique<TunnelSyscalls>(*context_, tunnel_bridge_.get()));
+
+    // World engine
+    world_engine_ = std::make_unique<WorldEngine>();
+    modules_.push_back(std::make_unique<WorldSyscalls>(*context_, world_engine_.get()));
+
     for (auto& module : modules_) {
         module->register_syscalls(*syscall_router_);
     }
@@ -273,6 +317,24 @@ bool Kernel::init() {
         sigaction(SIGCHLD, &sa, nullptr);
     }
 
+    // Persistence layer (SQLite)
+    if (config_.persistence_enabled && !config_.db_path.empty()) {
+        database_ = std::make_unique<Database>(config_.db_path);
+        if (database_->open()) {
+            audit_store_ = std::make_unique<AuditStore>(*database_);
+            state_store_db_ = std::make_unique<StateStoreDb>(*database_);
+
+            // Restore persisted state into memory
+            auto entries = state_store_db_->load_all();
+            for (const auto& e : entries) {
+                state_store_->store(e.key, e.value, e.agent_id, e.scope, 0);
+            }
+            spdlog::info("Persistence: loaded {} state entries from {}", entries.size(), config_.db_path);
+        } else {
+            spdlog::warn("Failed to open database: {}", config_.db_path);
+        }
+    }
+
     // Policy file watcher
     if (!config_.policy_file.empty()) {
         policy_watcher_ = std::make_unique<PolicyWatcher>(config_.policy_file);
@@ -300,6 +362,47 @@ bool Kernel::init() {
     spdlog::info("Sandboxing: {}", config_.enable_sandboxing ? "enabled" : "disabled");
     spdlog::info("Inference gateway: {}", config_.llm_proxy_enabled ? "enabled" : "disabled");
     spdlog::info("Privacy filter: {}", config_.privacy_enabled ? "enabled" : "disabled");
+    spdlog::info("MCP bridge: {}", config_.mcp_enabled ? "enabled" : "disabled");
+    spdlog::info("A2A bridge: {}", config_.a2a_enabled ? "enabled" : "disabled");
+
+    // Start A2A server
+    if (a2a_bridge_) {
+        if (a2a_bridge_->start(config_.a2a_port)) {
+            spdlog::info("A2A server listening on port {}", config_.a2a_port);
+        } else {
+            spdlog::warn("Failed to start A2A server on port {}", config_.a2a_port);
+        }
+    }
+
+    // Start API server
+    if (config_.api_enabled) {
+        ApiContext api_ctx{
+            config_, *agent_manager_, *state_store_, *event_bus_,
+            *permissions_store_, *inference_gateway_, *privacy_filter_,
+            *audit_logger_, *execution_logger_, *policy_recommender_,
+            mcp_bridge_.get(), a2a_bridge_.get(), tunnel_bridge_.get(), world_engine_.get()
+        };
+        api_server_ = std::make_unique<ApiServer>(api_ctx);
+        if (api_server_->start(config_.api_port, config_.api_key)) {
+            spdlog::info("API server listening on port {}", config_.api_port);
+        } else {
+            spdlog::warn("Failed to start API server on port {}", config_.api_port);
+        }
+    }
+
+    // Start MCP servers
+    if (mcp_bridge_) {
+        mcp_bridge_->start_all();
+        auto statuses = mcp_bridge_->status();
+        for (const auto& s : statuses) {
+            if (s.connected) {
+                spdlog::info("MCP server '{}': {} tools available", s.name, s.tool_count);
+            } else {
+                spdlog::warn("MCP server '{}': failed to connect", s.name);
+            }
+        }
+    }
+
     return true;
 }
 
@@ -324,6 +427,9 @@ void Kernel::run() {
     }
 
     spdlog::info("Kernel shutting down...");
+    if (api_server_) api_server_->stop();
+    if (a2a_bridge_) a2a_bridge_->stop();
+    if (mcp_bridge_) mcp_bridge_->stop_all();
     if (policy_watcher_) policy_watcher_->stop();
     agent_manager_->stop_all();
     socket_server_->stop();
@@ -356,27 +462,28 @@ void Kernel::on_server_event(int, uint32_t events) {
 }
 
 void Kernel::on_client_event(int fd, uint32_t events) {
-    if (events & (static_cast<uint32_t>(EventType::HANGUP) | static_cast<uint32_t>(EventType::ERROR))) {
+    auto disconnect = [&] {
         reactor_->remove(fd);
+        client_write_state_.erase(fd);
         uint32_t agent_id = socket_server_->remove_client(fd);
         if (agent_id > 0) mailbox_registry_->unregister(agent_id);
+    };
+
+    if (events & (static_cast<uint32_t>(EventType::HANGUP) | static_cast<uint32_t>(EventType::ERROR))) {
+        disconnect();
         return;
     }
 
     if (events & static_cast<uint32_t>(EventType::READABLE)) {
         if (!socket_server_->handle_client(fd)) {
-            reactor_->remove(fd);
-            uint32_t agent_id = socket_server_->remove_client(fd);
-            if (agent_id > 0) mailbox_registry_->unregister(agent_id);
+            disconnect();
             return;
         }
     }
 
     if (events & static_cast<uint32_t>(EventType::WRITABLE)) {
         if (!socket_server_->flush_client(fd)) {
-            reactor_->remove(fd);
-            uint32_t agent_id = socket_server_->remove_client(fd);
-            if (agent_id > 0) mailbox_registry_->unregister(agent_id);
+            disconnect();
             return;
         }
     }
@@ -385,17 +492,34 @@ void Kernel::on_client_event(int fd, uint32_t events) {
 }
 
 void Kernel::update_client_events(int fd) {
+    bool wants_write = socket_server_->client_wants_write(fd);
+
+    // Only call reactor_->modify() if the writable state actually changed.
+    // On kqueue, modify() does EV_DELETE×2 + EV_ADD (3 kernel syscalls),
+    // so avoiding unnecessary calls is a significant throughput win.
+    auto it = client_write_state_.find(fd);
+    bool was_writing = (it != client_write_state_.end()) && it->second;
+
+    if (wants_write == was_writing) return;  // No change — skip modify
+
+    client_write_state_[fd] = wants_write;
+
     uint32_t events = static_cast<uint32_t>(EventType::READABLE) |
                       static_cast<uint32_t>(EventType::HANGUP) |
                       static_cast<uint32_t>(EventType::ERROR);
-    if (socket_server_->client_wants_write(fd)) {
+    if (wants_write) {
         events |= static_cast<uint32_t>(EventType::WRITABLE);
     }
     reactor_->modify(fd, events);
 }
 
 Message Kernel::handle_message(const Message& msg) {
-    // Record in execution log
+    // Fast path: skip timing entirely when not recording (common case).
+    if (execution_logger_->recording_state() != RecordingState::RECORDING) {
+        return syscall_router_->handle(msg);
+    }
+
+    // Slow path: time the syscall and record it.
     auto start = std::chrono::steady_clock::now();
     Message response = syscall_router_->handle(msg);
     auto end = std::chrono::steady_clock::now();

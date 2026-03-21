@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agents - CLOVE Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+<div class="app">
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1><span>CLOVE</span> Dashboard v2.0.0</h1>
+        </div>
+        <div class="header-right">
+            <div class="refresh-indicator">
+                <div class="refresh-dot"></div>
+                <span>Auto-refresh active</span>
+            </div>
+            <span class="ts" hx-get="/api/fragments/uptime" hx-trigger="load, every 5s" hx-swap="innerHTML">--</span>
+        </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <a href="/dashboard">Overview</a>
+        <a href="/dashboard/agents" class="active">Agents</a>
+        <a href="/dashboard/audit">Audit</a>
+        <a href="/dashboard/worlds">Worlds</a>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main">
+
+        <!-- Spawn Form -->
+        <div class="card" style="margin-bottom: 20px;">
+            <div class="card-header">
+                <h2>Spawn New Agent</h2>
+            </div>
+            <div class="card-body">
+                <form hx-post="/api/agents"
+                      hx-target="#spawn-result"
+                      hx-swap="innerHTML"
+                      hx-ext="json-enc">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Agent Name</label>
+                            <input type="text" name="name" placeholder="my-agent" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Command / Script Path</label>
+                            <input type="text" name="command" placeholder="/path/to/script.py" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Spawn Agent</button>
+                    </div>
+                </form>
+                <div id="spawn-result"></div>
+            </div>
+        </div>
+
+        <!-- Agent Table -->
+        <div class="card">
+            <div class="card-header">
+                <h2>All Agents</h2>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <span class="badge badge-info"
+                          hx-get="/api/fragments/agent-count"
+                          hx-trigger="load, every 3s"
+                          hx-swap="innerHTML">--</span>
+                    <span class="spinner htmx-indicator" id="agent-table-spinner"></span>
+                </div>
+            </div>
+            <div class="card-body no-pad"
+                 hx-get="/api/fragments/agent-table"
+                 hx-trigger="load, every 3s"
+                 hx-swap="innerHTML"
+                 hx-indicator="#agent-table-spinner">
+                <div class="empty-state"><div class="spinner"></div></div>
+            </div>
+        </div>
+
+    </main>
+
+</div>
+</body>
+</html>

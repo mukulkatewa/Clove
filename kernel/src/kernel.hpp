@@ -4,6 +4,7 @@
 #include <clove/protocol.hpp>
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace clove {
@@ -26,6 +27,14 @@ class PolicyWatcher;
 class PolicyRecommender;
 class SyscallRouter;
 class KernelModule;
+class Database;
+class AuditStore;
+class StateStoreDb;
+class McpBridge;
+class A2aBridge;
+class TunnelBridge;
+class WorldEngine;
+class ApiServer;
 struct KernelContext;
 struct Manifest;
 
@@ -67,10 +76,23 @@ private:
     std::unique_ptr<PolicyWatcher> policy_watcher_;
     std::unique_ptr<PolicyRecommender> policy_recommender_;
 
+    // Persistence
+    std::unique_ptr<Database> database_;
+    std::unique_ptr<AuditStore> audit_store_;
+    std::unique_ptr<StateStoreDb> state_store_db_;
+    std::unique_ptr<McpBridge> mcp_bridge_;
+    std::unique_ptr<A2aBridge> a2a_bridge_;
+    std::unique_ptr<TunnelBridge> tunnel_bridge_;
+    std::unique_ptr<WorldEngine> world_engine_;
+    std::unique_ptr<ApiServer> api_server_;
+
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;
     std::unique_ptr<KernelContext> context_;
     std::vector<std::unique_ptr<KernelModule>> modules_;
+
+    // Tracks per-fd writable registration to avoid redundant kqueue modify calls.
+    std::unordered_map<int, bool> client_write_state_;
 
     // Event handlers
     void on_server_event(int fd, uint32_t events);

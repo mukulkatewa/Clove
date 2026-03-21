@@ -1,0 +1,104 @@
+{
+  "timestamp": "2026-03-20T22:42:39Z",
+  "suite": "control-plane-v2",
+  "mode": "quick",
+  "system": {
+    "os": "Darwin arm64",
+    "cpu": "Apple M5",
+    "ram_gb": 24
+  },
+  "kernel": "/Users/anixd/Documents/clove-v2/build/kernel/clove_kernel",
+  "kernel_bytes": 1418048,
+  "results": [
+    {
+      "test": "Audit Query",
+      "value": 0.0312,
+      "unit": "ms",
+      "category": "observability",
+      "notes": "After 500 syscalls generating audit entries",
+      "detail": {
+        "unfiltered": {
+          "min": 0.023374999999992152,
+          "p25": 0.03008300000001407,
+          "p50": 0.031916000000020706,
+          "p75": 0.03279100000003199,
+          "p95": 0.038333000000001505,
+          "p99": 0.04154099999997829,
+          "max": 0.04154099999997829,
+          "avg": 0.03124162500000166,
+          "stdev": 0.0036018252971416276
+        },
+        "filtered": {
+          "min": 0.02387500000000653,
+          "p25": 0.02987500000001253,
+          "p50": 0.03249999999999087,
+          "p75": 0.03291699999996567,
+          "p95": 0.0348339999999836,
+          "p99": 0.036249999999959925,
+          "max": 0.036249999999959925,
+          "avg": 0.03150527500000305,
+          "stdev": 0.0024502652079063498
+        }
+      }
+    },
+    {
+      "test": "Replay Overhead",
+      "value": -38.7,
+      "unit": "%",
+      "category": "observability",
+      "notes": "OFF=43797 ON=60734 ops/s",
+      "detail": {
+        "off_ops": 43797.08780024078,
+        "on_ops": 60733.87166487505,
+        "overhead_pct": -38.67102749361605,
+        "entries": 800
+      }
+    },
+    {
+      "test": "LLM Report",
+      "value": 0.034,
+      "unit": "ms",
+      "category": "observability",
+      "notes": "",
+      "detail": {
+        "report": {
+          "min": 0.020666999999918723,
+          "p25": 0.021292000000006084,
+          "p50": 0.02429199999998133,
+          "p75": 0.03225000000006695,
+          "p95": 0.08083300000005789,
+          "p99": 0.1511670000000631,
+          "max": 0.1511670000000631,
+          "avg": 0.03395210000000093,
+          "stdev": 0.022645898116099565
+        },
+        "config": {
+          "min": 0.022124999999983963,
+          "p25": 0.022458999999974694,
+          "p50": 0.023499999999954113,
+          "p75": 0.027082999999983315,
+          "p95": 0.06687500000002178,
+          "p99": 0.08025000000000393,
+          "max": 0.08025000000000393,
+          "avg": 0.029205429999994426,
+          "stdev": 0.013759124711017257
+        }
+      }
+    },
+    {
+      "test": "Policy Recommend",
+      "value": 0.0709,
+      "unit": "ms",
+      "category": "observability",
+      "notes": "20 denials -> 5 recommendations",
+      "detail": {
+        "denial_count": 20,
+        "rec_count": 5,
+        "latency_ms": 0.07091600000008746
+      }
+    }
+  ],
+  "categories": [
+    "observability"
+  ]
+}

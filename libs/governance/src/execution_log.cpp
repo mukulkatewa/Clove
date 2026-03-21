@@ -11,31 +11,31 @@ ExecutionLogger::ExecutionLogger() = default;
 bool ExecutionLogger::start_recording(const RecordingConfig& config) {
     std::lock_guard lock(mutex_);
 
-    if (recording_state_ == RecordingState::RECORDING) return false;
+    if (recording_state_.load(std::memory_order_relaxed) == RecordingState::RECORDING) return false;
 
-    config_          = config;
-    recording_state_ = RecordingState::RECORDING;
+    config_ = config;
     entries_.clear();
     entries_.reserve(std::min(config_.max_entries, size_t{4096}));
     next_sequence_ = 1;
+    recording_state_.store(RecordingState::RECORDING, std::memory_order_release);
     return true;
 }
 
 bool ExecutionLogger::stop_recording() {
     std::lock_guard lock(mutex_);
 
-    if (recording_state_ == RecordingState::IDLE) return false;
+    if (recording_state_.load(std::memory_order_relaxed) == RecordingState::IDLE) return false;
 
-    recording_state_ = RecordingState::IDLE;
+    recording_state_.store(RecordingState::IDLE, std::memory_order_release);
     return true;
 }
 
 bool ExecutionLogger::pause_recording() {
     std::lock_guard lock(mutex_);
 
-    if (recording_state_ != RecordingState::RECORDING) return false;
+    if (recording_state_.load(std::memory_order_relaxed) != RecordingState::RECORDING) return false;
 
-    recording_state_ = RecordingState::PAUSED;
+    recording_state_.store(RecordingState::PAUSED, std::memory_order_release);
     return true;
 }
 
@@ -83,9 +83,14 @@ void ExecutionLogger::record(uint32_t agent_id, SyscallOp opcode,
                              const std::string& payload,
                              const std::string& response,
                              uint64_t duration_us, bool success) {
+    // Fast path: skip mutex entirely when not recording.
+    // This is the common case — recording is opt-in.
+    if (recording_state_.load(std::memory_order_relaxed) != RecordingState::RECORDING) return;
+
     std::lock_guard lock(mutex_);
 
-    if (recording_state_ != RecordingState::RECORDING) return;
+    // Re-check under lock (state may have changed).
+    if (recording_state_.load(std::memory_order_relaxed) != RecordingState::RECORDING) return;
     if (!should_record(opcode)) return;
     if (entries_.size() >= config_.max_entries) return; // buffer full
 

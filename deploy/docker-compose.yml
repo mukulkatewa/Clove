@@ -1,0 +1,23 @@
+version: '3.8'
+services:
+  clove:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"   # REST API + Dashboard
+      - "8081:8081"   # A2A bridge
+    volumes:
+      - clove-data:/data
+    environment:
+      - CLOVE_API_KEY=${CLOVE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    restart: unless-stopped
+    command: >
+      --socket /tmp/clove.sock
+      --db /data/clove.db
+      --api --api-port 8080
+      --a2a --mcp
+
+volumes:
+  clove-data:

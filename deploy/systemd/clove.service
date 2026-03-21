@@ -1,0 +1,30 @@
+[Unit]
+Description=CLOVE Agent Fleet Kernel v2
+After=network.target
+Documentation=https://cloveos.com
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/clove_kernel \
+    --socket /var/run/clove/clove.sock \
+    --db /var/lib/clove/clove.db \
+    --api --api-port 8080
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=clove
+Group=clove
+RuntimeDirectory=clove
+StateDirectory=clove
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/clove /var/run/clove
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

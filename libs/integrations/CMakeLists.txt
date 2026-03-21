@@ -2,6 +2,9 @@ find_package(CURL REQUIRED)
 
 add_library(clove_integrations STATIC
     src/openrouter.cpp
+    src/mcp_bridge.cpp
+    src/a2a_bridge.cpp
+    src/tunnel_bridge.cpp
 )
 target_include_directories(clove_integrations PUBLIC include)
 target_link_libraries(clove_integrations PUBLIC
