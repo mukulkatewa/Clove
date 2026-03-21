@@ -1,0 +1,81 @@
+# clove-openclaw configuration
+# Run OpenClaw inside CLOVE's kernel sandbox
+
+openclaw:
+  # How to launch OpenClaw
+  command: "openclaw"
+  args: ["gateway", "--headless"]
+  # Alternative: run from source
+  # command: "npx"
+  # args: ["tsx", "openclaw.mjs", "gateway", "--headless"]
+
+sandbox:
+  memory_limit_mb: 512
+  cpu_quota_percent: 50
+  max_pids: 32
+  enable_network: true      # OpenClaw needs network for messaging platforms
+
+filesystem:
+  allowed_read:
+    - /tmp
+    - ~/.openclaw
+    - ~/Documents
+    - ~/Desktop
+  allowed_write:
+    - /tmp
+    - ~/.openclaw
+    - ~/.openclaw/agents
+    - ~/.openclaw/credentials
+
+network:
+  allowed_domains:
+    # LLM providers
+    - api.openai.com
+    - api.anthropic.com
+    - openrouter.ai
+    - generativelanguage.googleapis.com
+    - api.groq.com
+    # Messaging platforms
+    - api.telegram.org
+    - discord.com
+    - gateway.discord.gg
+    - slack.com
+    - web.whatsapp.com
+    - signal.org
+    # OpenClaw services
+    - api.openclaw.ai
+    - clawhub.dev
+    - registry.npmjs.org
+
+llm:
+  provider: openrouter        # route through CLOVE's OpenRouter integration
+  max_cost_usd: 10.0          # daily budget
+  allowed_models: []           # empty = all models allowed
+
+privacy:
+  enabled: true
+  mode: redact                 # audit | redact | block
+  patterns:
+    - ssn
+    - email
+    - phone
+    - credit_card
+    - ip_address
+
+audit:
+  log_syscalls: true
+  log_network: true
+  log_security: true
+
+# Multi-agent mode (optional)
+# Uncomment to run multiple OpenClaw instances
+# agents:
+#   - name: researcher
+#     skills: [research, web]
+#     memory_limit_mb: 256
+#   - name: writer
+#     skills: [writing, email]
+#     memory_limit_mb: 256
+#   - name: reviewer
+#     skills: [review, qa]
+#     memory_limit_mb: 128
