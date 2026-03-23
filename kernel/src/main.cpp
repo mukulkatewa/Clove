@@ -2,6 +2,8 @@
 #include <clove/version.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -31,7 +33,36 @@ void print_banner() {
 int main(int argc, char** argv) {
     print_banner();
 
+    // Load .env file if present (check current dir, then parent)
+    auto load_env = [](const std::string& path) {
+        std::ifstream f(path);
+        if (!f.is_open()) return;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = line.substr(0, eq);
+            std::string val = line.substr(eq + 1);
+            // Don't overwrite existing env vars
+            setenv(key.c_str(), val.c_str(), 0);
+        }
+    };
+    load_env(".env");
+    load_env("examples/.env");
+
     clove::KernelConfig config;
+
+    // Auto-configure from environment variables
+    const char* or_key = getenv("OPENROUTER_API_KEY");
+    if (or_key && or_key[0]) {
+        config.openrouter_enabled = true;
+        config.openrouter_api_key = or_key;
+    }
+    const char* api_key_env = getenv("CLOVE_API_KEY");
+    if (api_key_env && api_key_env[0]) {
+        config.api_key = api_key_env;
+    }
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -71,11 +102,13 @@ int main(int argc, char** argv) {
         else if (arg == "--db" && i+1 < argc) config.db_path = argv[++i];
         // API
         else if (arg == "--api")         config.api_enabled = true;
+        else if (arg == "--no-api")      config.api_enabled = false;
         else if (arg == "--api-port" && i+1 < argc) config.api_port = static_cast<uint16_t>(std::stoi(argv[++i]));
         else if (arg == "--api-key" && i+1 < argc)  config.api_key = argv[++i];
         // OpenRouter
         else if (arg == "--openrouter")  config.openrouter_enabled = true;
         else if (arg == "--openrouter-key" && i+1 < argc) config.openrouter_api_key = argv[++i];
+        else if (arg == "--llm-model" && i+1 < argc) config.llm_model = argv[++i];
         // Integrations
         else if (arg == "--otel")        config.otel_enabled = true;
         else if (arg == "--otel-endpoint" && i+1 < argc) config.otel_endpoint = argv[++i];

@@ -15,6 +15,8 @@ const char* event_type_to_string(KernelEventType type) {
         case KernelEventType::STATE_CHANGED:    return "STATE_CHANGED";
         case KernelEventType::SYSCALL_BLOCKED:  return "SYSCALL_BLOCKED";
         case KernelEventType::RESOURCE_WARNING: return "RESOURCE_WARNING";
+        case KernelEventType::BUDGET_EXCEEDED:  return "BUDGET_EXCEEDED";
+        case KernelEventType::BUDGET_WARNING:   return "BUDGET_WARNING";
         case KernelEventType::POLICY_UPDATED:   return "POLICY_UPDATED";
         case KernelEventType::CUSTOM:           return "CUSTOM";
     }

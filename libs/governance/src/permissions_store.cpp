@@ -28,4 +28,20 @@ bool PermissionsStore::exists(uint32_t agent_id) const {
     return permissions_.contains(agent_id);
 }
 
+// Budget management
+AgentBudget& PermissionsStore::get_or_create_budget(uint32_t agent_id) {
+    std::lock_guard lock(mutex_);
+    return budgets_[agent_id];
+}
+
+void PermissionsStore::set_budget(uint32_t agent_id, const AgentBudget& budget) {
+    std::lock_guard lock(mutex_);
+    budgets_[agent_id] = budget;
+}
+
+void PermissionsStore::remove_budget(uint32_t agent_id) {
+    std::lock_guard lock(mutex_);
+    budgets_.erase(agent_id);
+}
+
 } // namespace clove

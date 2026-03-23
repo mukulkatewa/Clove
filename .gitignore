@@ -10,3 +10,6 @@ compile_commands.json
 *.db
 *.db-shm
 *.db-wal
+.env
+.env.*
+!.env.example

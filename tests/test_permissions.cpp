@@ -42,16 +42,7 @@ TEST_CASE("AgentPermissions JSON roundtrip", "[permissions]") {
     REQUIRE(restored.allowed_domains.size() == 2);
 }
 
-TEST_CASE("AgentPermissions LLM quota tracking", "[permissions]") {
-    AgentPermissions p;
-    p.max_llm_calls = 3;
-
-    REQUIRE(p.can_use_llm());
-    p.record_llm_usage(100);
-    p.record_llm_usage(100);
-    p.record_llm_usage(100);
-    REQUIRE_FALSE(p.can_use_llm());
-}
+// NOTE: LLM token/cost tracking is now in AgentBudget, tested in test_budget.cpp
 
 TEST_CASE("PermissionsStore get_or_create", "[permissions]") {
     PermissionsStore store;

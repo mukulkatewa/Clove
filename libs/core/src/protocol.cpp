@@ -97,8 +97,32 @@ const char* opcode_to_string(SyscallOp op) noexcept {
         case SyscallOp::SYS_CREDS_GET:           return "SYS_CREDS_GET";
         case SyscallOp::SYS_OTEL_SPAN:           return "SYS_OTEL_SPAN";
 
-        // Meta
+        // Context / Artifacts
+        case SyscallOp::SYS_DOC_CREATE:          return "SYS_DOC_CREATE";
+        case SyscallOp::SYS_DOC_READ:            return "SYS_DOC_READ";
+        case SyscallOp::SYS_DOC_UPDATE:          return "SYS_DOC_UPDATE";
+        case SyscallOp::SYS_DOC_LIST:            return "SYS_DOC_LIST";
+        case SyscallOp::SYS_DOC_DELETE:          return "SYS_DOC_DELETE";
+        case SyscallOp::SYS_CHAIN_CREATE:        return "SYS_CHAIN_CREATE";
+        case SyscallOp::SYS_CHAIN_GET:           return "SYS_CHAIN_GET";
+        case SyscallOp::SYS_CHAIN_FORK:          return "SYS_CHAIN_FORK";
+        case SyscallOp::SYS_CONTEXT_ASSEMBLE:    return "SYS_CONTEXT_ASSEMBLE";
+
+        // Memory Blocks
+        case SyscallOp::SYS_MEM_CREATE:          return "SYS_MEM_CREATE";
+        case SyscallOp::SYS_MEM_READ:            return "SYS_MEM_READ";
+        case SyscallOp::SYS_MEM_WRITE:           return "SYS_MEM_WRITE";
+        case SyscallOp::SYS_MEM_APPEND:          return "SYS_MEM_APPEND";
+        case SyscallOp::SYS_MEM_DELETE:          return "SYS_MEM_DELETE";
+        case SyscallOp::SYS_MEM_LIST:            return "SYS_MEM_LIST";
+        case SyscallOp::SYS_MEM_SHARE:           return "SYS_MEM_SHARE";
+
+        // Meta / Budget
         case SyscallOp::SYS_LLM_REPORT:          return "SYS_LLM_REPORT";
+        case SyscallOp::SYS_SET_BUDGET:           return "SYS_SET_BUDGET";
+        case SyscallOp::SYS_GET_BUDGET:           return "SYS_GET_BUDGET";
+        case SyscallOp::SYS_SET_PRIORITY:         return "SYS_SET_PRIORITY";
+        case SyscallOp::SYS_GET_PRIORITY:         return "SYS_GET_PRIORITY";
         case SyscallOp::SYS_HELLO:               return "SYS_HELLO";
         case SyscallOp::SYS_EXIT:                return "SYS_EXIT";
     }

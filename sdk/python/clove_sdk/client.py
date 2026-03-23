@@ -331,3 +331,210 @@ class CloveClient:
         if arguments is not None:
             payload["arguments"] = arguments
         return self._send(SyscallOp.SYS_MCP_CALL, payload)
+
+    # ── Context / Artifacts ──────────────────────────────────────
+
+    def doc_create(
+        self,
+        type: str,
+        title: str,
+        content: str,
+        chain_id: str,
+        parent_ids: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "type": type,
+            "title": title,
+            "content": content,
+            "chain_id": chain_id,
+        }
+        if parent_ids:
+            payload["parent_ids"] = parent_ids
+        if metadata:
+            payload["metadata"] = metadata
+        return self._send(SyscallOp.SYS_DOC_CREATE, payload)
+
+    def doc_read(self, id: str) -> dict:
+        return self._send(SyscallOp.SYS_DOC_READ, {"id": id})
+
+    def doc_update(
+        self,
+        id: str,
+        content: str | None = None,
+        state: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"id": id}
+        if content is not None:
+            payload["content"] = content
+        if state is not None:
+            payload["state"] = state
+        return self._send(SyscallOp.SYS_DOC_UPDATE, payload)
+
+    def doc_list(
+        self,
+        chain_id: str | None = None,
+        type: str | None = None,
+        state: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        payload: dict[str, Any] = {"limit": limit}
+        if chain_id:
+            payload["chain_id"] = chain_id
+        if type:
+            payload["type"] = type
+        if state:
+            payload["state"] = state
+        resp = self._send(SyscallOp.SYS_DOC_LIST, payload)
+        return resp.get("artifacts", [])
+
+    def doc_delete(self, id: str) -> dict:
+        return self._send(SyscallOp.SYS_DOC_DELETE, {"id": id})
+
+    def chain_create(
+        self,
+        name: str,
+        description: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "name": name,
+            "description": description,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        return self._send(SyscallOp.SYS_CHAIN_CREATE, payload)
+
+    def chain_get(self, id: str) -> dict:
+        return self._send(SyscallOp.SYS_CHAIN_GET, {"id": id})
+
+    def chain_fork(self, chain_id: str, at_artifact_id: str) -> dict:
+        return self._send(
+            SyscallOp.SYS_CHAIN_FORK,
+            {"chain_id": chain_id, "at_artifact_id": at_artifact_id},
+        )
+
+    def context_assemble(
+        self, chain_id: str, max_tokens: int = 128000
+    ) -> dict:
+        return self._send(
+            SyscallOp.SYS_CONTEXT_ASSEMBLE,
+            {"chain_id": chain_id, "max_tokens": max_tokens},
+        )
+
+    def think_with_context(
+        self,
+        prompt: str,
+        chain_id: str,
+        model: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "chain_id": chain_id,
+            "auto_context": True,
+        }
+        if model:
+            payload["model"] = model
+        return self._send(SyscallOp.SYS_THINK, payload)
+
+    # ── Memory Blocks ────────────────────────────────────────────
+
+    def mem_create(
+        self,
+        name: str,
+        type: str = "core",
+        access: str = "private",
+        content: str = "",
+        max_tokens: int = 0,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "name": name,
+            "type": type,
+            "access": access,
+            "content": content,
+        }
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+        return self._send(SyscallOp.SYS_MEM_CREATE, payload)
+
+    def mem_read(self, id: str | None = None, name: str | None = None) -> dict:
+        payload: dict[str, Any] = {}
+        if id:
+            payload["id"] = id
+        if name:
+            payload["name"] = name
+        return self._send(SyscallOp.SYS_MEM_READ, payload)
+
+    def mem_write(self, id: str, content: str) -> dict:
+        return self._send(
+            SyscallOp.SYS_MEM_WRITE, {"id": id, "content": content}
+        )
+
+    def mem_append(self, id: str, content: str) -> dict:
+        return self._send(
+            SyscallOp.SYS_MEM_APPEND, {"id": id, "content": content}
+        )
+
+    def mem_delete(self, id: str) -> dict:
+        return self._send(SyscallOp.SYS_MEM_DELETE, {"id": id})
+
+    def mem_list(self, limit: int = 100) -> list[dict]:
+        resp = self._send(SyscallOp.SYS_MEM_LIST, {"limit": limit})
+        return resp.get("blocks", [])
+
+    def mem_share(self, id: str, target_agent_id: int) -> dict:
+        return self._send(
+            SyscallOp.SYS_MEM_SHARE,
+            {"id": id, "target_agent_id": target_agent_id},
+        )
+
+    # ── Budget ───────────────────────────────────────────────────
+
+    def set_budget(
+        self,
+        agent_id: int | None = None,
+        max_tokens: int | None = None,
+        max_steps: int | None = None,
+        max_time_ms: int | None = None,
+        max_cost_usd: float | None = None,
+        kill_on_exceeded: bool = False,
+        reset: bool = False,
+    ) -> dict:
+        payload: dict[str, Any] = {}
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if max_steps is not None:
+            payload["max_steps"] = max_steps
+        if max_time_ms is not None:
+            payload["max_time_ms"] = max_time_ms
+        if max_cost_usd is not None:
+            payload["max_cost_usd"] = max_cost_usd
+        if kill_on_exceeded:
+            payload["kill_on_exceeded"] = True
+        if reset:
+            payload["reset"] = True
+        return self._send(SyscallOp.SYS_SET_BUDGET, payload)
+
+    def get_budget(self, agent_id: int | None = None) -> dict:
+        payload: dict[str, Any] = {}
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        return self._send(SyscallOp.SYS_GET_BUDGET, payload or None)
+
+    # ── Priority / Scheduling ────────────────────────────────────
+
+    def set_priority(
+        self, priority: str = "normal", agent_id: int | None = None
+    ) -> dict:
+        payload: dict[str, Any] = {"priority": priority}
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        return self._send(SyscallOp.SYS_SET_PRIORITY, payload)
+
+    def get_priority(self, agent_id: int | None = None) -> dict:
+        payload: dict[str, Any] = {}
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        return self._send(SyscallOp.SYS_GET_PRIORITY, payload or None)

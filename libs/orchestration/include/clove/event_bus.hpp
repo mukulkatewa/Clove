@@ -21,6 +21,8 @@ enum class KernelEventType : uint32_t {
     STATE_CHANGED,
     SYSCALL_BLOCKED,
     RESOURCE_WARNING,
+    BUDGET_EXCEEDED,
+    BUDGET_WARNING,
     POLICY_UPDATED,
     CUSTOM
 };

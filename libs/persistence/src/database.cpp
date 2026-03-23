@@ -80,6 +80,55 @@ bool Database::create_schema() {
         );
 
         INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+
+        -- Context layer: artifacts and chains
+        CREATE TABLE IF NOT EXISTS artifacts (
+            id              TEXT PRIMARY KEY,
+            chain_id        TEXT    NOT NULL,
+            author_agent_id INTEGER NOT NULL,
+            type            INTEGER NOT NULL,
+            state           INTEGER NOT NULL DEFAULT 0,
+            title           TEXT    NOT NULL,
+            content         TEXT    NOT NULL DEFAULT '',
+            parent_ids      TEXT    NOT NULL DEFAULT '[]',
+            metadata        TEXT    NOT NULL DEFAULT '{}',
+            created_at_ms   INTEGER NOT NULL,
+            updated_at_ms   INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_artifact_chain ON artifacts(chain_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_author ON artifacts(author_agent_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_state ON artifacts(state);
+        CREATE INDEX IF NOT EXISTS idx_artifact_type ON artifacts(type);
+
+        CREATE TABLE IF NOT EXISTS chains (
+            id                TEXT PRIMARY KEY,
+            name              TEXT    NOT NULL,
+            description       TEXT    NOT NULL DEFAULT '',
+            creator_agent_id  INTEGER NOT NULL,
+            artifact_ids      TEXT    NOT NULL DEFAULT '[]',
+            metadata          TEXT    NOT NULL DEFAULT '{}',
+            created_at_ms     INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chain_creator ON chains(creator_agent_id);
+
+        -- Memory blocks
+        CREATE TABLE IF NOT EXISTS memory_blocks (
+            id              TEXT PRIMARY KEY,
+            name            TEXT    NOT NULL,
+            owner_agent_id  INTEGER NOT NULL,
+            type            INTEGER NOT NULL DEFAULT 1,
+            access          INTEGER NOT NULL DEFAULT 0,
+            content         TEXT    NOT NULL DEFAULT '',
+            shared_with     TEXT    NOT NULL DEFAULT '[]',
+            max_tokens      INTEGER NOT NULL DEFAULT 0,
+            created_at_ms   INTEGER NOT NULL,
+            updated_at_ms   INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memblock_owner ON memory_blocks(owner_agent_id);
+        CREATE INDEX IF NOT EXISTS idx_memblock_type ON memory_blocks(type);
     )SQL";
 
     return exec(schema);

@@ -226,11 +226,7 @@ AgentPermissions AgentPermissions::from_json(const nlohmann::json& j) {
     get_strings("allowed_domains", p.allowed_domains);
     get_strings("allowed_http_methods", p.allowed_http_methods);
 
-    get_u64("max_llm_tokens", p.max_llm_tokens);
-    get_u32("max_llm_calls", p.max_llm_calls);
     get_u64("max_exec_time_ms", p.max_exec_time_ms);
-    get_u64("llm_tokens_used", p.llm_tokens_used);
-    get_u32("llm_calls_made", p.llm_calls_made);
 
     // Support "level" shorthand
     if (j.contains("level") && j["level"].is_string()) {
@@ -270,11 +266,7 @@ nlohmann::json AgentPermissions::to_json() const {
         {"blocked_commands", blocked_commands},
         {"allowed_domains", allowed_domains},
         {"allowed_http_methods", allowed_http_methods},
-        {"max_llm_tokens", max_llm_tokens},
-        {"max_llm_calls", max_llm_calls},
         {"max_exec_time_ms", max_exec_time_ms},
-        {"llm_tokens_used", llm_tokens_used},
-        {"llm_calls_made", llm_calls_made},
     };
 }
 
@@ -385,26 +377,6 @@ bool AgentPermissions::can_http_method(const std::string& method) const {
     }
 
     return false;
-}
-
-bool AgentPermissions::can_use_llm(uint32_t estimated_tokens) const {
-    if (!can_think) return false;
-
-    if (max_llm_calls > 0 && llm_calls_made >= max_llm_calls) {
-        return false;
-    }
-
-    if (max_llm_tokens > 0 &&
-        (llm_tokens_used + estimated_tokens) > max_llm_tokens) {
-        return false;
-    }
-
-    return true;
-}
-
-void AgentPermissions::record_llm_usage(uint32_t tokens) {
-    llm_tokens_used += tokens;
-    llm_calls_made += 1;
 }
 
 } // namespace clove

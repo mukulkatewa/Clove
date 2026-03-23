@@ -1,6 +1,7 @@
 add_executable(clove_kernel
     src/main.cpp
     src/kernel.cpp
+    src/syscall_router.cpp
     src/syscalls/state_syscalls.cpp
     src/syscalls/ipc_syscalls.cpp
     src/syscalls/event_syscalls.cpp
@@ -20,6 +21,9 @@ add_executable(clove_kernel
     src/syscalls/creds_syscalls.cpp
     src/syscalls/tunnel_syscalls.cpp
     src/syscalls/world_syscalls.cpp
+    src/syscalls/context_syscalls.cpp
+    src/syscalls/budget_syscalls.cpp
+    src/syscalls/memory_syscalls.cpp
 )
 
 target_include_directories(clove_kernel PRIVATE
@@ -38,6 +42,7 @@ target_link_libraries(clove_kernel PRIVATE
     clove_integrations
     clove_worlds
     clove_api
+    clove_context
     clove_persistence
     spdlog::spdlog
     nlohmann_json::nlohmann_json

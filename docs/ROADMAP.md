@@ -1,62 +1,109 @@
-# CLOVE v2 — Roadmap & Progress Tracker
+# CLOVE v2 — Roadmap
 
-> Last updated: 2026-03-21
+> Last updated: 2026-03-23
 
-## Status: 46/66 syscall handlers registered (70%)
-## Remaining: World (9), Tunnel (5), Auth/Policy/Audit config (3), Replay playback (2), Metrics cgroup (1)
+## Status: 86 syscalls defined, all handler files implemented
 
-### Completed
+---
 
-| Feature | Syscalls | Performance |
-|---------|----------|-------------|
-| Core IPC | NOOP, HELLO, EXIT | 95K+ ops/s sustained |
-| Agent Lifecycle | SPAWN, KILL, LIST, PAUSE, RESUME | LIST: 0.03ms |
-| State Store | STORE, FETCH, DELETE, KEYS | 16K+ writes/s, TTL eviction works |
-| Mailbox IPC | SEND, RECV, BROADCAST, REGISTER | P2P round-trip: 0.1ms |
-| Event Bus | SUBSCRIBE, UNSUBSCRIBE, POLL_EVENTS, EMIT | Emit+Poll: 0.09ms, 50-sub fanout: 0.03ms |
-| Permissions | GET_PERMS, SET_PERMS | +0.05ms overhead vs NOOP |
-| Audit Logger | GET_AUDIT_LOG | 0.03ms query after 2K entries |
-| PII Filter | PII_SCAN, PII_REDACT | 100% detection, 0 false positives, 0.2ms redact |
-| Inference Gateway | THINK, LLM_CONFIG, LLM_REPORT | Blocked call: +0.005ms overhead |
-| Policy Engine | POLICY_RECOMMEND | 0.1ms for recommendations |
-| Execution Replay | RECORD_START, RECORD_STOP, RECORD_STATUS | ~2% recording overhead |
-| OpenRouter LLM | Full libcurl HTTP client | chat(), list_models(), get_credits() |
-| File I/O | READ, WRITE, EXEC | Permission-gated with path/command ACLs |
-| HTTP Proxy | HTTP | Permission-gated with domain allowlist |
-| Async Tasks | ASYNC_POLL | Polls completed async task results |
-| Metrics | METRICS_SYSTEM, METRICS_AGENT, METRICS_ALL_AGENTS | RSS, CPU, subsystem stats |
-| Persistence | SQLite (Database, AuditStore, StateStoreDb) | WAL mode, auto-migration, state restore on boot |
-| Sandbox | (process-level) | Linux namespaces + cgroups v2 |
-| MCP Bridge | MCP_LIST, MCP_CALL | JSON-RPC over stdio, tool discovery, per-agent ACL |
-| A2A Protocol | A2A_SEND, A2A_RECV | HTTP server (inbound) + curl client (outbound), agent card |
-| OTel Spans | OTEL_SPAN | Span recording, audit log integration, 10K span buffer |
-| Credentials | CREDS_GET | Permission-gated secret retrieval from state store |
-| Benchmarks | v1-vs-v2 (14 tests), control plane (21 tests) | Full governance pipeline: 0.12ms |
+## Implemented
 
-### Stubbed (infrastructure exists, needs finishing)
+### Core Kernel
+| Feature | Syscalls | Notes |
+|---------|----------|-------|
+| Core IPC | NOOP, HELLO, EXIT | 95K+ ops/s |
+| Agent Lifecycle | SPAWN, KILL, LIST, PAUSE, RESUME | Full lifecycle + restart policies |
+| State Store | STORE, FETCH, DELETE, KEYS | KV with TTL, scopes, SQLite persistence |
+| Mailbox IPC | SEND, RECV, BROADCAST, REGISTER | P2P + broadcast, name resolution |
+| Event Bus | SUBSCRIBE, UNSUBSCRIBE, POLL_EVENTS, EMIT | 14 event types, per-agent queues |
+| Permissions | GET_PERMS, SET_PERMS, AUTH, POLICY_UPDATE | RBAC, 5 levels, path/command/domain ACLs |
+| File I/O | READ, WRITE, EXEC | Permission-gated |
+| HTTP Proxy | HTTP | CURL client, SSRF guard, domain allowlist |
+| Async Tasks | ASYNC_POLL | Worker pool for background jobs |
 
-| Feature | What's Done | What's Missing |
-|---------|------------|----------------|
-| Landlock | `apply_landlock()` function signature | Actual Landlock syscalls for filesystem MAC |
-| seccomp | `apply_seccomp()` function signature | BPF filter for syscall whitelist |
-| Replay Playback | REPLAY_START/STATUS opcodes defined | Handler to load log + re-inject messages |
+### Security & Isolation
+| Feature | Notes |
+|---------|-------|
+| Linux Namespaces | PID, NET, MNT, UTS via clone() |
+| cgroups v2 | Memory, CPU, PIDs limits |
+| Landlock LSM | Filesystem ACLs (read/write paths) |
+| seccomp BPF | 27 blocked syscalls |
+| PII Filter | PII_SCAN, PII_REDACT — 5 patterns + custom regex |
+| Audit Logger | GET_AUDIT_LOG, SET_AUDIT_CONFIG — 8 categories |
+| Execution Replay | RECORD_START/STOP/STATUS, REPLAY_START/STATUS — full record + playback |
+| Policy Hot-Reload | File watcher (kqueue/inotify), no restart |
+| Policy Recommendations | POLICY_RECOMMEND — learns from denial patterns |
 
-### Not Started
+### LLM & Integrations
+| Feature | Notes |
+|---------|-------|
+| OpenRouter | 300+ models, THINK + LLM_CONFIG + LLM_REPORT |
+| MCP Bridge | MCP_LIST, MCP_CALL — JSON-RPC over stdio |
+| A2A Protocol | A2A_SEND, A2A_RECV — HTTP server/client, agent cards |
+| OTel Tracing | OTEL_SPAN — span export |
+| Credentials | CREDS_GET — permission-gated secret retrieval |
+| Metrics | METRICS_SYSTEM, METRICS_AGENT, METRICS_ALL_AGENTS, METRICS_CGROUP |
 
-| Feature | Opcodes | Priority | Notes |
-|---------|---------|----------|-------|
-| REST API | — | P2 | HTTP fleet management. `--api` flag exists |
-| World (Multi-tenant) | 0xA0-0xA8 | P3 | Isolated realms (9 opcodes) |
-| Tunnel (Remote) | 0xB0-0xB4 | P3 | Bridge agents across machines (5 opcodes) |
-| Metrics (cgroup) | 0xC3 | P3 | cgroup-level resource monitoring |
-| Landlock + seccomp | — | P3 | Full Linux sandbox hardening |
+### Context & Memory (new)
+| Feature | Syscalls | Notes |
+|---------|----------|-------|
+| Artifacts | DOC_CREATE/READ/UPDATE/LIST/DELETE | Typed docs with state machine, DAG provenance |
+| Chains | CHAIN_CREATE/GET/FORK | Ordered artifact sequences with fork |
+| Context Assembly | CONTEXT_ASSEMBLE | L1/L2/L3 layers, token budgeting, truncation reporting |
+| Context-Aware LLM | SYS_THINK + auto_context | Kernel-assembled context prepended to prompts |
+| Memory Blocks | MEM_CREATE/READ/WRITE/APPEND/DELETE/LIST/SHARE | Named, typed (SYSTEM/CORE/RECALL), shareable |
+| Observation Masking | Built into ContextAssembler | Compresses tool outputs ~50% savings |
 
-### Build Order
+### Scheduling & Budgets (new)
+| Feature | Syscalls | Notes |
+|---------|----------|-------|
+| Four-Budget Enforcement | SET_BUDGET, GET_BUDGET | Token, step, time, cost — kernel-enforced |
+| Agent Scheduler | SET_PRIORITY, GET_PRIORITY | 5 priority levels, state tracking |
+| Budget Middleware | — | Step count + time check on every syscall |
+| LLM Cost Tracking | — | Tokens + USD recorded after every SYS_THINK |
 
-```
-DONE  — OpenRouter, ASYNC_POLL, HTTP, File I/O, Metrics, SQLite, MCP, A2A, OTel, Creds, Tests (93 cases)
+### Multi-Tenancy & Networking
+| Feature | Syscalls | Notes |
+|---------|----------|-------|
+| World Engine | WORLD_CREATE/DESTROY/LIST/JOIN/LEAVE/EVENT/STATE/SNAPSHOT/RESTORE | Isolated realms |
+| Tunnel Bridge | TUNNEL_CONNECT/DISCONNECT/STATUS/LIST_REMOTES/CONFIG | Remote agent bridging |
 
-Next  — REST API → Replay playback → Auth/Policy syscalls
+### Infrastructure
+| Feature | Notes |
+|---------|-------|
+| REST API | 34 HTTP routes, Bearer auth, HTMX dashboard |
+| CLI | 13 commands |
+| Python SDK | 86 syscall methods, Agent class with @tool decorator |
+| SQLite Persistence | WAL mode, write-through for state/artifacts/chains/memory blocks |
+| Docker | Multi-stage Alpine build, docker-compose |
+| systemd | Hardened service file |
 
-Future — World (9 opcodes) → Tunnel (5 opcodes) → Landlock → seccomp
-```
+---
+
+## Not Yet Done
+
+### Engineering (in priority order)
+| Feature | Effort | Why |
+|---------|--------|-----|
+| End-to-end integration test | Small | Verify kernel + SDK work together |
+| macOS sandbox improvement | Medium | Currently fork-only, no isolation |
+| Subgoal compression in ContextAssembler | Small | Summarize completed subtasks |
+
+### Compliance (deferred)
+| Feature | Why |
+|---------|-----|
+| Audit log retention policy + JSONL export | EU AI Act (Aug 2026) |
+| OWASP ASI Top 10 mapping doc | Enterprise sales positioning |
+| Immutable audit log guarantee | Compliance requirement |
+
+---
+
+## Architecture Docs
+
+| Doc | Purpose |
+|-----|---------|
+| [CONTEXT_LAYER.md](architecture/CONTEXT_LAYER.md) | Artifacts, chains, context assembly |
+| [MEMORY_ARCHITECTURE.md](architecture/MEMORY_ARCHITECTURE.md) | 3-tier memory, memory blocks, compression |
+| [SCHEDULER_DESIGN.md](architecture/SCHEDULER_DESIGN.md) | Priority scheduler, state tracking |
+| [SECURITY_COMPLIANCE.md](architecture/SECURITY_COMPLIANCE.md) | OWASP mapping, EU AI Act, budgets |
+| [RESEARCH_SYNTHESIS.md](research/RESEARCH_SYNTHESIS.md) | ~50 paper survey driving design decisions |

@@ -1,5 +1,6 @@
 #include "mod.hpp"
 #include <clove/permissions_store.hpp>
+#include <clove/agent_scheduler.hpp>
 #include <clove/audit_log.hpp>
 #include <clove/policy_recommender.hpp>
 #include <fstream>
@@ -157,6 +158,9 @@ void FileIoSyscalls::register_syscalls(SyscallRouter& router) {
                 ctx_.audit_logger.log(AuditCategory::SYSCALL, "EXEC_START",
                     msg.agent_id(), "", {{"command", command}});
 
+                // Track tool wait state
+                if (ctx_.scheduler) ctx_.scheduler->mark_waiting_tool(msg.agent_id());
+
                 // Execute with popen — capture stdout
                 std::string output;
                 std::string cmd_with_redirect = command + " 2>&1";
@@ -175,6 +179,9 @@ void FileIoSyscalls::register_syscalls(SyscallRouter& router) {
                 }
                 int exit_code = pclose(pipe);
                 exit_code = WEXITSTATUS(exit_code);
+
+                // Back to ready
+                if (ctx_.scheduler) ctx_.scheduler->mark_ready(msg.agent_id());
 
                 response["success"] = (exit_code == 0);
                 response["exit_code"] = exit_code;

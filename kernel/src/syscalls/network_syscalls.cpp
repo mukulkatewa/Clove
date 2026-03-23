@@ -1,5 +1,6 @@
 #include "mod.hpp"
 #include <clove/permissions_store.hpp>
+#include <clove/agent_scheduler.hpp>
 #include <clove/audit_log.hpp>
 #include <clove/policy_recommender.hpp>
 #include <curl/curl.h>
@@ -101,7 +102,13 @@ void NetworkSyscalls::register_syscalls(SyscallRouter& router) {
                     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
                 }
 
+                // Track tool wait state
+                if (ctx_.scheduler) ctx_.scheduler->mark_waiting_tool(msg.agent_id());
+
                 CURLcode res = curl_easy_perform(curl);
+
+                // Back to ready
+                if (ctx_.scheduler) ctx_.scheduler->mark_ready(msg.agent_id());
 
                 if (res == CURLE_OK) {
                     long status_code = 0;

@@ -1,5 +1,6 @@
 #include "mod.hpp"
 #include <clove/state_store.hpp>
+#include <clove/state_store_db.hpp>
 
 namespace clove {
 
@@ -19,7 +20,11 @@ void StateSyscalls::register_syscalls(SyscallRouter& router) {
 
                 bool ok = ctx_.state_store.store(key, value, msg.agent_id(), scope, ttl_ms);
                 response["success"] = ok;
-                if (ok) response["key"] = key;
+                if (ok) {
+                    response["key"] = key;
+                    // Write-through to SQLite (if persistence enabled)
+                    if (db_) db_->store(key, value, msg.agent_id(), scope);
+                }
             } catch (const std::exception& e) {
                 response["success"] = false;
                 response["error"] = e.what();
@@ -61,6 +66,7 @@ void StateSyscalls::register_syscalls(SyscallRouter& router) {
 
                 bool ok = ctx_.state_store.erase(key, msg.agent_id());
                 response["success"] = ok;
+                if (ok && db_) db_->erase(key);
             } catch (const std::exception& e) {
                 response["success"] = false;
                 response["error"] = e.what();

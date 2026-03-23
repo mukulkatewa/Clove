@@ -28,6 +28,13 @@
 #include <clove/tunnel_bridge.hpp>
 #include <clove/world_engine.hpp>
 #include <clove/api_server.hpp>
+#include <clove/artifact_store.hpp>
+#include <clove/chain_store.hpp>
+#include <clove/context_assembler.hpp>
+#include <clove/artifact_store_db.hpp>
+#include <clove/memory_block_store.hpp>
+#include <clove/memory_block_db.hpp>
+#include <clove/agent_scheduler.hpp>
 
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -76,6 +83,16 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
     execution_logger_ = std::make_unique<ExecutionLogger>();
     policy_recommender_ = std::make_unique<PolicyRecommender>();
 
+    // Scheduler
+    scheduler_ = std::make_unique<AgentScheduler>();
+
+    // Context layer
+    artifact_store_ = std::make_unique<ArtifactStore>();
+    chain_store_ = std::make_unique<ChainStore>();
+    memory_block_store_ = std::make_unique<MemoryBlockStore>();
+    context_assembler_ = std::make_unique<ContextAssembler>(
+        *artifact_store_, *chain_store_, memory_block_store_.get());
+
     // Configure inference gateway
     if (config.llm_proxy_enabled) {
         InferenceGatewayConfig gw_config;
@@ -95,49 +112,17 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
         or_config.default_model = config.llm_model;
         openrouter->configure(or_config);
 
-        // Set as LLM queue backend — every SYS_THINK goes through OpenRouter
+        // Set as LLM queue backend — every SYS_THINK goes through OpenRouter.
+        // PII filtering is handled in llm_syscalls.cpp BEFORE reaching this lambda,
+        // so the prompt arriving here is already cleaned.
         llm_queue_->set_backend([openrouter, this](uint32_t agent_id, const std::string& prompt) -> std::string {
-            // Determine model (from config or agent request)
             std::string model = config_.llm_model;
 
-            // PII filter before sending
-            if (privacy_filter_->is_enabled()) {
-                auto result = privacy_filter_->redact(prompt);
-                if (privacy_filter_->mode() == PrivacyMode::BLOCK && !result.matches.empty()) {
-                    nlohmann::json err;
-                    err["success"] = false;
-                    err["error"] = "PII detected in prompt, blocked by privacy policy";
-                    err["pii_types"] = nlohmann::json::array();
-                    for (const auto& m : result.matches) {
-                        err["pii_types"].push_back(m.type_name);
-                    }
-                    return err.dump();
-                }
-
-                // Use redacted prompt
-                auto response = openrouter->chat(model, result.cleaned_text);
-
-                // Record cost
-                if (response.success) {
-                    inference_gateway_->record_cost(response.usage.cost_usd);
-                }
-
-                nlohmann::json j;
-                j["success"] = response.success;
-                j["content"] = response.content;
-                j["tokens"] = response.usage.total_tokens;
-                j["cost_usd"] = response.usage.cost_usd;
-                j["model"] = response.model_used;
-                if (!response.success) j["error"] = response.error;
-                if (!result.matches.empty()) {
-                    j["pii_redacted"] = result.matches.size();
-                }
-                return j.dump();
-            }
-
-            // No PII filter — send directly
             auto response = openrouter->chat(model, prompt);
 
+            // Record cost at SYSTEM level (fleet-wide spending cap).
+            // Per-agent cost tracking happens separately in llm_syscalls.cpp
+            // via AgentBudget. Both are intentional — different scopes.
             if (response.success) {
                 inference_gateway_->record_cost(response.usage.cost_usd);
             }
@@ -181,11 +166,16 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
         *privacy_filter_,
         *audit_logger_,
         *execution_logger_,
-        *policy_recommender_
+        *policy_recommender_,
+        scheduler_.get()
     });
 
     // Create syscall router with built-in handlers
     syscall_router_ = std::make_unique<SyscallRouter>();
+
+    // Wire budget enforcement into syscall router
+    syscall_router_->set_budget_enforcement(
+        permissions_store_.get(), event_bus_.get(), audit_logger_.get());
 
     // Register built-in handlers
     syscall_router_->register_handler(SyscallOp::SYS_NOOP,
@@ -224,7 +214,7 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
     modules_.push_back(std::make_unique<EventSyscalls>(*context_));
     modules_.push_back(std::make_unique<PermissionSyscalls>(*context_));
     modules_.push_back(std::make_unique<AuditSyscalls>(*context_));
-    modules_.push_back(std::make_unique<LlmSyscalls>(*context_));
+    modules_.push_back(std::make_unique<LlmSyscalls>(*context_, context_assembler_.get(), scheduler_.get()));
     modules_.push_back(std::make_unique<PiiSyscalls>(*context_));
     modules_.push_back(std::make_unique<ReplaySyscalls>(*context_, syscall_router_.get()));
     modules_.push_back(std::make_unique<AgentSyscalls>(*context_));
@@ -254,6 +244,16 @@ Kernel::Kernel(const KernelConfig& config) : config_(config) {
     // World engine
     world_engine_ = std::make_unique<WorldEngine>();
     modules_.push_back(std::make_unique<WorldSyscalls>(*context_, world_engine_.get()));
+
+    // Context layer (artifacts, chains, context assembly)
+    modules_.push_back(std::make_unique<ContextSyscalls>(
+        *context_, artifact_store_.get(), chain_store_.get(), context_assembler_.get()));
+
+    // Memory blocks
+    modules_.push_back(std::make_unique<MemorySyscalls>(*context_, memory_block_store_.get()));
+
+    // Budget enforcement + priority syscalls
+    modules_.push_back(std::make_unique<BudgetSyscalls>(*context_, scheduler_.get()));
 
     for (auto& module : modules_) {
         module->register_syscalls(*syscall_router_);
@@ -330,6 +330,40 @@ bool Kernel::init() {
                 state_store_->store(e.key, e.value, e.agent_id, e.scope, 0);
             }
             spdlog::info("Persistence: loaded {} state entries from {}", entries.size(), config_.db_path);
+
+            // Restore persisted artifacts and chains
+            artifact_store_db_ = std::make_unique<ArtifactStoreDb>(*database_);
+            auto artifacts = artifact_store_db_->load_all();
+            for (const auto& a : artifacts) {
+                artifact_store_->insert(a);
+            }
+            auto chains = artifact_store_db_->load_all_chains();
+            for (const auto& c : chains) {
+                chain_store_->insert(c);
+            }
+            spdlog::info("Persistence: loaded {} artifacts, {} chains",
+                artifacts.size(), chains.size());
+
+            // Restore persisted memory blocks
+            memory_block_db_ = std::make_unique<MemoryBlockDb>(*database_);
+            auto mem_blocks = memory_block_db_->load_all();
+            for (const auto& b : mem_blocks) {
+                memory_block_store_->insert(b);
+            }
+            spdlog::info("Persistence: loaded {} memory blocks", mem_blocks.size());
+
+            // Wire write-through to syscall modules
+            for (auto& module : modules_) {
+                if (auto* state_mod = dynamic_cast<StateSyscalls*>(module.get())) {
+                    state_mod->set_db(state_store_db_.get());
+                }
+                if (auto* ctx_mod = dynamic_cast<ContextSyscalls*>(module.get())) {
+                    ctx_mod->set_db(artifact_store_db_.get());
+                }
+                if (auto* mem_mod = dynamic_cast<MemorySyscalls*>(module.get())) {
+                    mem_mod->set_db(memory_block_db_.get());
+                }
+            }
         } else {
             spdlog::warn("Failed to open database: {}", config_.db_path);
         }
@@ -424,6 +458,33 @@ void Kernel::run() {
         agent_manager_->reap_and_restart_agents();
         agent_manager_->process_pending_restarts();
         state_store_->evict_expired();
+
+        // Check time budgets for all agents
+        {
+            auto now = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            permissions_store_->for_each_budget([&](uint32_t agent_id, AgentBudget& budget) {
+                if (budget.max_time_ms > 0 && !budget.check_time(now)) {
+                    event_bus_->emit(KernelEventType::BUDGET_EXCEEDED, {
+                        {"agent_id", agent_id},
+                        {"budget_type", "time"},
+                        {"elapsed_ms", now - budget.started_at_ms},
+                        {"max_time_ms", budget.max_time_ms}
+                    }, agent_id);
+                    audit_logger_->log(AuditCategory::RESOURCE, "TIME_BUDGET_EXCEEDED",
+                        agent_id, "", {
+                            {"elapsed_ms", now - budget.started_at_ms},
+                            {"max_time_ms", budget.max_time_ms}
+                        });
+                    if (budget.kill_on_exceeded) {
+                        agent_manager_->kill_agent(agent_id);
+                        // Reset timer to avoid repeated kills
+                        budget.started_at_ms = 0;
+                    }
+                }
+            });
+        }
     }
 
     spdlog::info("Kernel shutting down...");

@@ -20,12 +20,16 @@ public:
 
 // ── Syscall module implementations ──────────────────────────────
 
+class StateStoreDb;  // Forward declare
+
 class StateSyscalls : public KernelModule {
 public:
     explicit StateSyscalls(KernelContext& ctx) : ctx_(ctx) {}
     void register_syscalls(SyscallRouter& router) override;
+    void set_db(StateStoreDb* db) { db_ = db; }
 private:
     KernelContext& ctx_;
+    StateStoreDb* db_ = nullptr;
 };
 
 class IpcSyscalls : public KernelModule {
@@ -62,10 +66,14 @@ private:
 
 class LlmSyscalls : public KernelModule {
 public:
-    explicit LlmSyscalls(KernelContext& ctx) : ctx_(ctx) {}
+    LlmSyscalls(KernelContext& ctx, ContextAssembler* assembler = nullptr,
+                 AgentScheduler* scheduler = nullptr)
+        : ctx_(ctx), assembler_(assembler), scheduler_(scheduler) {}
     void register_syscalls(SyscallRouter& router) override;
 private:
     KernelContext& ctx_;
+    ContextAssembler* assembler_;
+    AgentScheduler* scheduler_;
 };
 
 class PiiSyscalls : public KernelModule {
@@ -132,10 +140,15 @@ private:
     KernelContext& ctx_;
 };
 
-class McpBridge;      // Forward declare
-class A2aBridge;      // Forward declare
-class TunnelBridge;   // Forward declare
-class WorldEngine;    // Forward declare
+class McpBridge;          // Forward declare
+class A2aBridge;          // Forward declare
+class TunnelBridge;       // Forward declare
+class WorldEngine;        // Forward declare
+class ArtifactStore;      // Forward declare
+class ChainStore;         // Forward declare
+class ContextAssembler;   // Forward declare
+class ArtifactStoreDb;    // Forward declare
+class MemoryBlockStore;   // Forward declare
 
 class McpSyscalls : public KernelModule {
 public:
@@ -189,6 +202,51 @@ public:
 private:
     KernelContext& ctx_;
     WorldEngine* engine_;
+};
+
+class ContextSyscalls : public KernelModule {
+public:
+    ContextSyscalls(KernelContext& ctx, ArtifactStore* artifacts,
+                    ChainStore* chains, ContextAssembler* assembler)
+        : ctx_(ctx), artifacts_(artifacts), chains_(chains),
+          assembler_(assembler) {}
+    void register_syscalls(SyscallRouter& router) override;
+
+    // Set after init() when persistence is available
+    void set_db(ArtifactStoreDb* db) { db_ = db; }
+
+private:
+    KernelContext& ctx_;
+    ArtifactStore* artifacts_;
+    ChainStore* chains_;
+    ContextAssembler* assembler_;
+    ArtifactStoreDb* db_ = nullptr;
+};
+
+class MemoryBlockDb;  // Forward declare
+
+class MemorySyscalls : public KernelModule {
+public:
+    MemorySyscalls(KernelContext& ctx, MemoryBlockStore* store)
+        : ctx_(ctx), store_(store) {}
+    void register_syscalls(SyscallRouter& router) override;
+    void set_db(MemoryBlockDb* db) { db_ = db; }
+private:
+    KernelContext& ctx_;
+    MemoryBlockStore* store_;
+    MemoryBlockDb* db_ = nullptr;
+};
+
+class AgentScheduler;  // Forward declare
+
+class BudgetSyscalls : public KernelModule {
+public:
+    BudgetSyscalls(KernelContext& ctx, AgentScheduler* scheduler = nullptr)
+        : ctx_(ctx), scheduler_(scheduler) {}
+    void register_syscalls(SyscallRouter& router) override;
+private:
+    KernelContext& ctx_;
+    AgentScheduler* scheduler_;
 };
 
 } // namespace clove

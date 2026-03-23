@@ -23,11 +23,15 @@ add_executable(clove_tests
     test_world_engine.cpp
     test_a2a_bridge.cpp
     test_execution_replay.cpp
+    test_budget.cpp
+    test_memory_blocks.cpp
+    test_scheduler.cpp
 )
 
 target_link_libraries(clove_tests PRIVATE
     Catch2::Catch2WithMain
     clove_core
+    clove_context
     clove_orchestration
     clove_governance
     clove_integrations

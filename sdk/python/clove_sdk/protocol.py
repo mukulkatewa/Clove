@@ -110,6 +110,32 @@ class SyscallOp(IntEnum):
     SYS_CREDS_GET           = 0xD8
     SYS_OTEL_SPAN           = 0xD9
 
+    # ── Context / Artifacts ──────────────────────────────────────────
+    SYS_DOC_CREATE          = 0xE0
+    SYS_DOC_READ            = 0xE1
+    SYS_DOC_UPDATE          = 0xE2
+    SYS_DOC_LIST            = 0xE3
+    SYS_DOC_DELETE          = 0xE4
+    SYS_CHAIN_CREATE        = 0xE5
+    SYS_CHAIN_GET           = 0xE6
+    SYS_CHAIN_FORK          = 0xE7
+    SYS_CONTEXT_ASSEMBLE    = 0xE8
+
+    # ── Memory Blocks ────────────────────────────────────────────────
+    SYS_MEM_CREATE          = 0xE9
+    SYS_MEM_READ            = 0xEA
+    SYS_MEM_WRITE           = 0xEB
+    SYS_MEM_APPEND          = 0xEC
+    SYS_MEM_DELETE          = 0xED
+    SYS_MEM_LIST            = 0xEE
+    SYS_MEM_SHARE           = 0xEF
+
+    # ── Budget ────────────────────────────────────────────────────────
+    SYS_SET_BUDGET          = 0xF1
+    SYS_GET_BUDGET          = 0xF2
+    SYS_SET_PRIORITY        = 0xF3
+    SYS_GET_PRIORITY        = 0xF4
+
     # ── Diagnostics ─────────────────────────────────────────────────
     SYS_LLM_REPORT          = 0xF0
     SYS_HELLO               = 0xFE

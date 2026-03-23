@@ -20,6 +20,7 @@ class AuditLogger;
 class ExecutionLogger;
 class PolicyWatcher;
 class PolicyRecommender;
+class AgentScheduler;
 
 // Reference bundle passed to all syscall handlers
 struct KernelContext {
@@ -38,6 +39,7 @@ struct KernelContext {
     AuditLogger& audit_logger;
     ExecutionLogger& execution_logger;
     PolicyRecommender& policy_recommender;
+    AgentScheduler* scheduler = nullptr;  // optional, may be null
 };
 
 } // namespace clove

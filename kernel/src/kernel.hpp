@@ -35,6 +35,13 @@ class A2aBridge;
 class TunnelBridge;
 class WorldEngine;
 class ApiServer;
+class ArtifactStore;
+class ChainStore;
+class ContextAssembler;
+class ArtifactStoreDb;
+class MemoryBlockStore;
+class MemoryBlockDb;
+class AgentScheduler;
 struct KernelContext;
 struct Manifest;
 
@@ -85,6 +92,13 @@ private:
     std::unique_ptr<TunnelBridge> tunnel_bridge_;
     std::unique_ptr<WorldEngine> world_engine_;
     std::unique_ptr<ApiServer> api_server_;
+    std::unique_ptr<ArtifactStore> artifact_store_;
+    std::unique_ptr<ChainStore> chain_store_;
+    std::unique_ptr<ContextAssembler> context_assembler_;
+    std::unique_ptr<ArtifactStoreDb> artifact_store_db_;
+    std::unique_ptr<MemoryBlockStore> memory_block_store_;
+    std::unique_ptr<MemoryBlockDb> memory_block_db_;
+    std::unique_ptr<AgentScheduler> scheduler_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

@@ -4,10 +4,13 @@ add_library(clove_persistence STATIC
     src/database.cpp
     src/audit_store.cpp
     src/state_store_db.cpp
+    src/artifact_store_db.cpp
+    src/memory_block_db.cpp
 )
 target_include_directories(clove_persistence PUBLIC include)
 target_link_libraries(clove_persistence PUBLIC
     clove_core
+    clove_context
     clove_governance
     nlohmann_json::nlohmann_json
     SQLite::SQLite3

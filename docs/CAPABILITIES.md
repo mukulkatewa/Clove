@@ -4,7 +4,7 @@
 **Language:** C++23
 **Codebase:** 13,828 LOC (99 source files) + 645 LOC Python SDK + 1,372 LOC tests
 **Libraries:** 13 modular static libraries + 2 binaries (kernel, CLI)
-**Syscalls:** 66 opcodes over binary IPC protocol
+**Syscalls:** 86 opcodes over binary IPC protocol
 
 ---
 
@@ -378,13 +378,75 @@ clove help                           — usage
 
 ---
 
-## 14. Python SDK
+## 14. Context Layer (Chain of Docs)
 
-### CloveClient (66 syscall methods)
+### Artifacts
+- Typed documents: QUERY, RESEARCH, ANALYSIS, SYNTHESIS, REPORT, NOTE, PLAN
+- Lifecycle state machine: DRAFT → IN_REVIEW → APPROVED → FINAL → ARCHIVED
+- Forward-only state transitions, author-only mutations
+- DAG provenance via `parent_ids` — tracks what was built from what
+- JSON metadata (tokens_used, cost_usd, model, duration_ms)
+- Thread-safe in-memory store with SQLite write-through persistence
+
+### Chains
+- Ordered sequences of artifacts forming provenance DAGs
+- Fork support — branch a chain at any artifact point
+- Per-chain metadata and creator tracking
+
+### Context Assembly
+- Kernel auto-assembles agent context from chain artifacts
+- Three layers: L1 (shared FINAL/APPROVED), L2 (chain lineage), L3 (private DRAFTs)
+- Token budgeting with truncation reporting
+- Position-aware: critical info at context boundaries
+
+### Context-Aware LLM Calls
+- `SYS_THINK` accepts `auto_context: true` + `chain_id`
+- Kernel prepends assembled context before sending to LLM
+- No manual context management needed by agents
+
+### Syscalls (9 opcodes: 0xE0–0xE8)
+- DOC_CREATE, DOC_READ, DOC_UPDATE, DOC_LIST, DOC_DELETE
+- CHAIN_CREATE, CHAIN_GET, CHAIN_FORK
+- CONTEXT_ASSEMBLE
+
+---
+
+## 15. Four-Budget Enforcement
+
+### AgentBudget (kernel-enforced limits)
+- **Token budget** — max tokens per agent, checked before/after SYS_THINK
+- **Step budget** — max syscall count, checked on every syscall dispatch
+- **Time budget** — max wall-clock time, checked every reactor poll (100ms)
+- **Cost budget** — max USD spend, tracked from LLM response metadata
+- `kill_on_exceeded` flag for automatic agent termination
+- Budget middleware in SyscallRouter — zero-overhead when no budget set
+- Events: BUDGET_EXCEEDED, BUDGET_WARNING emitted to event bus
+- Syscalls: SYS_SET_BUDGET (0xF1), SYS_GET_BUDGET (0xF2)
+
+---
+
+## 16. Agent Scheduler
+
+### Priority-Based Scheduling
+- 5 priority levels: CRITICAL, HIGH, NORMAL, LOW, IDLE
+- FIFO ordering within same priority level
+- State tracking per agent: IDLE, READY, WAITING_LLM, WAITING_TOOL, COMPLETED
+- Automatic state transitions:
+  - SYS_THINK → mark_waiting_llm → mark_ready on response
+  - SYS_HTTP/SYS_EXEC → mark_waiting_tool → mark_ready on response
+- Per-agent stats: llm_calls, tool_calls, total_llm_wait_ms, total_tool_wait_ms
+- Scheduler stats JSON exposed via SYS_GET_PRIORITY
+- Syscalls: SYS_SET_PRIORITY (0xF3), SYS_GET_PRIORITY (0xF4)
+
+---
+
+## 17. Python SDK
+
+### CloveClient (86 syscall methods)
 - Binary protocol: `struct.pack('<IIBq', magic, agent_id, opcode, payload_size)`
 - Unix domain socket transport
 - Context manager (`with CloveClient() as client:`)
-- Methods for every syscall category: core, state, IPC, events, LLM, permissions, agents, file I/O, HTTP, PII, metrics, audit, recording, replay, worlds, MCP
+- Methods for every syscall category: core, state, IPC, events, LLM, permissions, agents, file I/O, HTTP, PII, metrics, audit, recording, replay, worlds, MCP, context/artifacts/chains
 
 ### Agent Class
 - High-level `Agent` class with `@agent.tool` decorator
@@ -534,7 +596,7 @@ clove help                           — usage
 
 | Feature | CLOVE | OpenShell |
 |---------|-------|-----------|
-| Python SDK | Full (66 methods, Agent class, @tool decorator) | No native SDK |
+| Python SDK | Full (86 methods, Agent class, @tool decorator) | No native SDK |
 | MCP support | Bridge with tool discovery + invocation | No |
 | A2A protocol | Bridge for cross-platform agent communication | No |
 | Framework support | Any (LangChain, CrewAI, ADK, custom) | Any (runs in container) |
@@ -557,14 +619,14 @@ clove help                           — usage
 |---------|-------|
 | **Multi-agent coordination** | IPC, mailboxes, event bus, shared state — OpenShell can't do this |
 | **Execution replay** | Full record/playback of every syscall — nobody else has this |
-| **66 syscall API** | Structured, typed interface for all agent operations |
+| **86 syscall API** | Structured, typed interface for all agent operations |
 | **Cost enforcement** | Kernel-level LLM budget limits |
 | **World isolation** | Multi-tenant environments with independent state/events |
 | **Lightweight** | 2MB binary, 3MB RAM vs 3.5GB images, 900MB RAM |
 | **Sub-millisecond IPC** | 0.02ms agent-to-agent, relevant at fleet scale |
 | **Policy recommendations** | AI-generated security suggestions from denial patterns |
 | **HTMX dashboard** | Built-in live monitoring UI |
-| **Python SDK** | Native 66-method SDK with Agent class |
+| **Python SDK** | Native 86-method SDK with Agent class |
 
 ## Summary
 

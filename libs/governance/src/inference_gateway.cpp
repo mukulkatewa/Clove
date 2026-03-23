@@ -66,7 +66,7 @@ bool InferenceGateway::is_enabled() const {
 bool InferenceGateway::is_model_allowed(const std::string& model) const {
     std::lock_guard lock(mutex_);
 
-    if (!config_.enabled) return true;
+    // Empty allowlist = all models allowed (regardless of gateway enabled state)
     if (config_.allowed_models.empty()) return true;
 
     for (const auto& pattern : config_.allowed_models) {

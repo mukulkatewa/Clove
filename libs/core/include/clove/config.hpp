@@ -17,7 +17,7 @@ struct KernelConfig {
     // -----------------------------------------------------------------------
     // LLM
     // -----------------------------------------------------------------------
-    std::string llm_model         = "gemini-2.0-flash";
+    std::string llm_model         = "google/gemini-2.0-flash-001";
     std::string gemini_api_key;
     size_t      llm_worker_count  = 8;
     size_t      async_worker_count = 8;
@@ -67,7 +67,7 @@ struct KernelConfig {
     // -----------------------------------------------------------------------
     // API server
     // -----------------------------------------------------------------------
-    bool        api_enabled = false;
+    bool        api_enabled = true;
     uint16_t    api_port    = 8080;
     std::string api_key;
 
