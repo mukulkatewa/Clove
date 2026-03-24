@@ -1,0 +1,93 @@
+{
+  "duration_s": 22.29,
+  "agents": 10,
+  "failures": 0,
+  "total_tokens": 4824,
+  "total_cost_usd": 0.001122,
+  "avg_latency_ms": 4021.4,
+  "replay_entries": 25,
+  "kernel_rss_mb": 17.0,
+  "state_store_size": 10,
+  "per_agent": [
+    {
+      "name": "researcher-1",
+      "role": "researcher",
+      "duration_ms": 2674.8,
+      "tokens": 284,
+      "cost_usd": 0.000101,
+      "success": true
+    },
+    {
+      "name": "researcher-2",
+      "role": "researcher",
+      "duration_ms": 7855.7,
+      "tokens": 270,
+      "cost_usd": 9.7e-05,
+      "success": true
+    },
+    {
+      "name": "researcher-3",
+      "role": "researcher",
+      "duration_ms": 7855.6,
+      "tokens": 289,
+      "cost_usd": 0.000105,
+      "success": true
+    },
+    {
+      "name": "writer-1",
+      "role": "writer",
+      "duration_ms": 4785.4,
+      "tokens": 527,
+      "cost_usd": 0.000125,
+      "success": true
+    },
+    {
+      "name": "writer-2",
+      "role": "writer",
+      "duration_ms": 4785.3,
+      "tokens": 472,
+      "cost_usd": 0.000107,
+      "success": true
+    },
+    {
+      "name": "writer-3",
+      "role": "writer",
+      "duration_ms": 2429.0,
+      "tokens": 509,
+      "cost_usd": 0.000116,
+      "success": true
+    },
+    {
+      "name": "reviewer-1",
+      "role": "reviewer",
+      "duration_ms": 2614.0,
+      "tokens": 365,
+      "cost_usd": 6.7e-05,
+      "success": true
+    },
+    {
+      "name": "reviewer-2",
+      "role": "reviewer",
+      "duration_ms": 2613.9,
+      "tokens": 323,
+      "cost_usd": 5.7e-05,
+      "success": true
+    },
+    {
+      "name": "reviewer-1",
+      "role": "reviewer",
+      "duration_ms": 1362.0,
+      "tokens": 312,
+      "cost_usd": 5.8e-05,
+      "success": true
+    },
+    {
+      "name": "synthesizer",
+      "role": "synthesizer",
+      "duration_ms": 3238.5,
+      "tokens": 1473,
+      "cost_usd": 0.000291,
+      "success": true
+    }
+  ]
+}

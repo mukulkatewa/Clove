@@ -1,0 +1,123 @@
+{
+  "topic": "The future of AI agent infrastructure in 2026",
+  "model": "google/gemini-2.0-flash-001",
+  "total_duration_s": 14.16,
+  "total_cost_usd": 0.0,
+  "total_tokens_in": 2321,
+  "total_tokens_out": 1803,
+  "total_llm_calls": 11,
+  "agents": [
+    {
+      "name": "researcher-1",
+      "role": "researcher",
+      "duration_ms": 2415.1,
+      "tokens_in": 48,
+      "tokens_out": 203,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "researcher-2",
+      "role": "researcher",
+      "duration_ms": 3292.1,
+      "tokens_in": 46,
+      "tokens_out": 257,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "researcher-3",
+      "role": "researcher",
+      "duration_ms": 2574.9,
+      "tokens_in": 47,
+      "tokens_out": 173,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "writer-1",
+      "role": "writer",
+      "duration_ms": 2369.4,
+      "tokens_in": 256,
+      "tokens_out": 184,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "writer-2",
+      "role": "writer",
+      "duration_ms": 1457.1,
+      "tokens_in": 308,
+      "tokens_out": 118,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "writer-3",
+      "role": "writer",
+      "duration_ms": 1956.1,
+      "tokens_in": 226,
+      "tokens_out": 194,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "reviewer-1",
+      "role": "reviewer",
+      "duration_ms": 1564.9,
+      "tokens_in": 235,
+      "tokens_out": 48,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "reviewer-1",
+      "role": "reviewer",
+      "duration_ms": 1185.9,
+      "tokens_in": 167,
+      "tokens_out": 43,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "reviewer-2",
+      "role": "reviewer",
+      "duration_ms": 1708.0,
+      "tokens_in": 244,
+      "tokens_out": 65,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "synthesizer",
+      "role": "synthesizer",
+      "duration_ms": 4286.4,
+      "tokens_in": 744,
+      "tokens_out": 518,
+      "cost_usd": 0.0,
+      "success": true,
+      "error": ""
+    },
+    {
+      "name": "monitor",
+      "role": "monitor",
+      "duration_ms": 14163.9,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0,
+      "success": true,
+      "error": ""
+    }
+  ],
+  "final_output_length": 3167,
+  "avg_latency_ms": 2281.0
+}

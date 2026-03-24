@@ -1,0 +1,11 @@
+{
+  "total_calls": 30,
+  "total_tokens_in": 9071,
+  "total_tokens_out": 8592,
+  "total_duration_s": 95.09857716699992,
+  "reports_saved": 10,
+  "failures": 0,
+  "cycles_completed": 10,
+  "total_elapsed_s": 1800.0,
+  "model": "google/gemini-2.0-flash-001"
+}
