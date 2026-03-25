@@ -15,6 +15,13 @@
 #include <clove/a2a_bridge.hpp>
 #include <clove/tunnel_bridge.hpp>
 #include <clove/world_engine.hpp>
+#include <clove/openrouter.hpp>
+#include <clove/llm_queue.hpp>
+#include <clove/artifact_store.hpp>
+#include <clove/chain_store.hpp>
+#include <clove/context_assembler.hpp>
+#include <clove/memory_block_store.hpp>
+#include <clove/run_engine.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -26,6 +33,9 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <future>
+#include <atomic>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -844,6 +854,619 @@ void ApiServer::setup_routes() {
         }
         html << "</tbody></table>";
         res.set_content(html.str(), "text/html");
+    });
+
+    // ===================================================================
+    // Product API — /api/think, /api/run, /api/fleet
+    // ===================================================================
+
+    // -----------------------------------------------------------------------
+    // Think — one-shot LLM call with cost tracking
+    // POST /api/think  {"prompt": "...", "model": "optional"}
+    // -----------------------------------------------------------------------
+    svr.Post("/api/think", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured. Set OPENROUTER_API_KEY."})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            std::string prompt = body.value("prompt", "");
+            std::string model = body.value("model", ctx_.config.llm_model);
+            auto messages = body.value("messages", json::array());
+
+            if (prompt.empty() && messages.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"prompt or messages required"})", "application/json");
+                return;
+            }
+
+            // PII filter
+            std::string filtered = prompt;
+            size_t pii_count = 0;
+            if (ctx_.privacy_filter.is_enabled() && !prompt.empty()) {
+                auto pii_result = ctx_.privacy_filter.redact(prompt);
+                filtered = pii_result.cleaned_text;
+                pii_count = pii_result.matches.size();
+            }
+
+            // Call LLM
+            OpenRouterResponse llm_resp;
+            if (!messages.empty()) {
+                llm_resp = ctx_.openrouter->chat_messages(model, messages);
+            } else {
+                llm_resp = ctx_.openrouter->chat(model, filtered);
+            }
+
+            // Track cost
+            if (llm_resp.success) {
+                ctx_.inference_gateway.record_cost(llm_resp.usage.cost_usd);
+            }
+
+            // Audit
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "THINK",
+                0, "", {
+                    {"model", llm_resp.model_used},
+                    {"tokens", llm_resp.usage.total_tokens},
+                    {"cost_usd", llm_resp.usage.cost_usd},
+                    {"prompt_len", filtered.size()},
+                });
+
+            json j;
+            j["success"] = llm_resp.success;
+            j["content"] = llm_resp.content;
+            j["model"] = llm_resp.model_used;
+            j["tokens"] = llm_resp.usage.total_tokens;
+            j["prompt_tokens"] = llm_resp.usage.prompt_tokens;
+            j["completion_tokens"] = llm_resp.usage.completion_tokens;
+            j["cost_usd"] = llm_resp.usage.cost_usd;
+            if (pii_count > 0) j["pii_redacted"] = pii_count;
+            if (!llm_resp.success) j["error"] = llm_resp.error;
+            res.set_content(j.dump(), "application/json");
+
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Run — full agent tool-calling loop (synchronous)
+    // POST /api/run  {"goal": "...", "budget": 0.50, "tools": [...], "model": "..."}
+    // -----------------------------------------------------------------------
+    svr.Post("/api/run", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured. Set OPENROUTER_API_KEY."})", "application/json");
+            return;
+        }
+
+        try {
+            auto body = json::parse(req.body);
+            RunConfig cfg;
+            cfg.goal = body.value("goal", "");
+            cfg.model = body.value("model", ctx_.config.llm_model);
+            cfg.budget_usd = body.value("budget", 1.0);
+            cfg.max_steps = body.value("max_steps", 20);
+            cfg.allowed_tools = body.value("tools", std::vector<std::string>{});
+            cfg.agent_name = body.value("agent_name", "agent");
+
+            if (cfg.goal.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"goal is required"})", "application/json");
+                return;
+            }
+
+            RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+                             ctx_.audit_logger, ctx_.state_store,
+                             ctx_.artifact_store, ctx_.chain_store,
+                             ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler,
+                             ctx_.config);
+
+            auto result = engine.execute(cfg);
+
+            json j;
+            j["success"] = result.success;
+            j["content"] = result.content;
+            j["steps"] = result.steps;
+            j["total_tokens"] = result.total_tokens;
+            j["total_cost_usd"] = result.total_cost_usd;
+            j["budget_usd"] = cfg.budget_usd;
+            j["model"] = cfg.model.empty() ? ctx_.config.llm_model : cfg.model;
+            j["chain_id"] = result.chain_id;
+            j["step_log"] = result.step_log;
+            if (!result.error.empty()) j["error"] = result.error;
+            res.set_content(j.dump(), "application/json");
+
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Run with SSE streaming — real-time events
+    // POST /api/run/stream  {"goal": "...", "budget": 0.50, ...}
+    // Returns: text/event-stream with events as they happen
+    // -----------------------------------------------------------------------
+    svr.Post("/api/run/stream", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured. Set OPENROUTER_API_KEY."})", "application/json");
+            return;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (...) {
+            res.status = 400;
+            res.set_content(R"({"error":"invalid JSON"})", "application/json");
+            return;
+        }
+
+        RunConfig cfg;
+        cfg.goal = body.value("goal", "");
+        cfg.model = body.value("model", ctx_.config.llm_model);
+        cfg.budget_usd = body.value("budget", 1.0);
+        cfg.max_steps = body.value("max_steps", 20);
+        cfg.allowed_tools = body.value("tools", std::vector<std::string>{});
+        cfg.agent_name = body.value("agent_name", "agent");
+
+        if (cfg.goal.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"goal is required"})", "application/json");
+            return;
+        }
+
+        // Capture what we need for the lambda
+        auto* openrouter = ctx_.openrouter;
+        auto* gateway = &ctx_.inference_gateway;
+        auto* privacy = &ctx_.privacy_filter;
+        auto* audit = &ctx_.audit_logger;
+        auto* state = &ctx_.state_store;
+        auto* artifacts = ctx_.artifact_store;
+        auto* chains = ctx_.chain_store;
+        auto* memory = ctx_.memory_blocks;
+        auto* mcp = ctx_.mcp_bridge;
+        auto* assembler = ctx_.assembler;
+        auto* config = &ctx_.config;
+
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [openrouter, gateway, privacy, audit, state, artifacts, chains, memory, mcp, assembler, config, cfg]
+            (size_t /*offset*/, httplib::DataSink& sink) -> bool {
+
+                RunEngine engine(*openrouter, *gateway, *privacy, *audit, *state,
+                                 artifacts, chains, memory, mcp, assembler, *config);
+
+                auto result = engine.execute(cfg, [&sink](const RunEvent& ev) {
+                    json event_data;
+                    event_data["type"] = ev.type;
+                    event_data["data"] = ev.data;
+                    std::string line = "data: " + event_data.dump() + "\n\n";
+                    sink.write(line.c_str(), line.size());
+                });
+
+                // Send final result
+                json final_event;
+                final_event["type"] = "result";
+                final_event["data"] = {
+                    {"success", result.success},
+                    {"content", result.content},
+                    {"steps", result.steps},
+                    {"total_tokens", result.total_tokens},
+                    {"total_cost_usd", result.total_cost_usd},
+                    {"chain_id", result.chain_id},
+                    {"step_log", result.step_log},
+                };
+                if (!result.error.empty()) final_event["data"]["error"] = result.error;
+                std::string line = "data: " + final_event.dump() + "\n\n";
+                sink.write(line.c_str(), line.size());
+
+                sink.done();
+                return true;
+            },
+            nullptr  // no resource releaser
+        );
+    });
+
+    // -----------------------------------------------------------------------
+    // Fleet — parallel agent runs with SSE streaming
+    // POST /api/fleet  {"goal": "...", "agents": 5, "budget": 2.00, ...}
+    // Returns: text/event-stream with events from all agents
+    // -----------------------------------------------------------------------
+    svr.Post("/api/fleet", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured. Set OPENROUTER_API_KEY."})", "application/json");
+            return;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (...) {
+            res.status = 400;
+            res.set_content(R"({"error":"invalid JSON"})", "application/json");
+            return;
+        }
+
+        std::string goal = body.value("goal", "");
+        int agent_count = body.value("agents", 3);
+        double total_budget = body.value("budget", 2.0);
+        std::string model = body.value("model", ctx_.config.llm_model);
+        int max_steps = body.value("max_steps", 15);
+        auto tools = body.value("tools", std::vector<std::string>{});
+
+        if (goal.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"goal is required"})", "application/json");
+            return;
+        }
+
+        agent_count = std::min(agent_count, 20);  // Safety cap
+        double per_agent_budget = total_budget / agent_count;
+
+        auto* openrouter = ctx_.openrouter;
+        auto* gateway = &ctx_.inference_gateway;
+        auto* privacy = &ctx_.privacy_filter;
+        auto* audit = &ctx_.audit_logger;
+        auto* state = &ctx_.state_store;
+        auto* artifacts = ctx_.artifact_store;
+        auto* chains = ctx_.chain_store;
+        auto* memory = ctx_.memory_blocks;
+        auto* mcp = ctx_.mcp_bridge;
+        auto* assembler = ctx_.assembler;
+        auto* config = &ctx_.config;
+
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [=](size_t /*offset*/, httplib::DataSink& sink) -> bool {
+
+                std::mutex sink_mtx;
+                auto safe_emit = [&sink, &sink_mtx](const json& event) {
+                    std::lock_guard<std::mutex> lock(sink_mtx);
+                    std::string line = "data: " + event.dump() + "\n\n";
+                    sink.write(line.c_str(), line.size());
+                };
+
+                // Fleet start event
+                safe_emit({
+                    {"type", "fleet_start"},
+                    {"data", {
+                        {"goal", goal},
+                        {"agent_count", agent_count},
+                        {"total_budget_usd", total_budget},
+                        {"per_agent_budget_usd", per_agent_budget},
+                    }}
+                });
+
+                // Phase 1: Run N researcher agents in parallel
+                std::vector<std::thread> threads;
+                std::vector<RunResult> results(agent_count);
+                std::atomic<int> completed{0};
+
+                for (int i = 0; i < agent_count; i++) {
+                    threads.emplace_back([&, i]() {
+                        RunConfig cfg;
+                        cfg.goal = goal;
+                        cfg.model = model;
+                        cfg.budget_usd = per_agent_budget;
+                        cfg.max_steps = max_steps;
+                        cfg.allowed_tools = tools;
+                        cfg.agent_name = "agent-" + std::to_string(i + 1);
+
+                        RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                                         *state, artifacts, chains, memory, mcp, assembler, *config);
+
+                        results[i] = engine.execute(cfg, [&, i](const RunEvent& ev) {
+                            json wrapped;
+                            wrapped["type"] = "agent_event";
+                            wrapped["data"] = ev.data;
+                            wrapped["data"]["agent"] = "agent-" + std::to_string(i + 1);
+                            wrapped["data"]["event_type"] = ev.type;
+                            safe_emit(wrapped);
+                        });
+
+                        int done = ++completed;
+                        safe_emit({
+                            {"type", "agent_done"},
+                            {"data", {
+                                {"agent", "agent-" + std::to_string(i + 1)},
+                                {"success", results[i].success},
+                                {"steps", results[i].steps},
+                                {"cost_usd", results[i].total_cost_usd},
+                                {"tokens", results[i].total_tokens},
+                                {"completed", done},
+                                {"total", agent_count},
+                            }}
+                        });
+                    });
+                }
+
+                // Wait for all agents
+                for (auto& t : threads) {
+                    t.join();
+                }
+
+                // Aggregate results
+                double total_cost = 0;
+                int total_tokens = 0;
+                int total_steps = 0;
+                json agent_outputs = json::array();
+                bool all_success = true;
+
+                for (int i = 0; i < agent_count; i++) {
+                    total_cost += results[i].total_cost_usd;
+                    total_tokens += results[i].total_tokens;
+                    total_steps += results[i].steps;
+                    if (!results[i].success) all_success = false;
+                    agent_outputs.push_back({
+                        {"agent", "agent-" + std::to_string(i + 1)},
+                        {"success", results[i].success},
+                        {"content_preview", results[i].content.substr(0, 300)},
+                        {"steps", results[i].steps},
+                        {"cost_usd", results[i].total_cost_usd},
+                        {"chain_id", results[i].chain_id},
+                    });
+                }
+
+                // Phase 2: Synthesize (if multiple agents produced results)
+                std::string synthesis;
+                double synth_cost = 0;
+                if (agent_count > 1 && all_success) {
+                    std::string synth_prompt = "Synthesize these " +
+                        std::to_string(agent_count) + " research outputs into one coherent summary:\n\n";
+                    for (int i = 0; i < agent_count; i++) {
+                        synth_prompt += "--- Agent " + std::to_string(i+1) + " ---\n";
+                        synth_prompt += results[i].content.substr(0, 2000) + "\n\n";
+                    }
+
+                    safe_emit({
+                        {"type", "synthesizing"},
+                        {"data", {{"message", "Synthesizing outputs from all agents..."}}}
+                    });
+
+                    auto synth_resp = openrouter->chat(model, synth_prompt);
+                    synthesis = synth_resp.content;
+                    synth_cost = synth_resp.usage.cost_usd;
+                    total_cost += synth_cost;
+                    total_tokens += synth_resp.usage.total_tokens;
+                    gateway->record_cost(synth_cost);
+                } else if (agent_count == 1) {
+                    synthesis = results[0].content;
+                }
+
+                // Fleet done
+                safe_emit({
+                    {"type", "fleet_done"},
+                    {"data", {
+                        {"success", all_success},
+                        {"synthesis", synthesis.substr(0, 500)},
+                        {"agent_count", agent_count},
+                        {"total_steps", total_steps},
+                        {"total_tokens", total_tokens},
+                        {"total_cost_usd", total_cost},
+                        {"agents", agent_outputs},
+                    }}
+                });
+
+                // Store synthesis as artifact
+                if (artifacts && chains && !synthesis.empty()) {
+                    auto chain = chains->create(0, "fleet", goal.substr(0, 200));
+                    artifacts->create(0, ArtifactType::REPORT,
+                        "Fleet Synthesis", synthesis, chain.id);
+                }
+
+                sink.done();
+                return true;
+            },
+            nullptr
+        );
+    });
+
+
+    // -----------------------------------------------------------------------
+    // Run status — get result of a past run by chain ID
+    // GET /api/run/:chain_id
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/run/([a-z0-9_]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string chain_id = req.matches[1];
+        if (!ctx_.chain_store) {
+            res.status = 503;
+            res.set_content(R"({"error":"chain store not available"})", "application/json");
+            return;
+        }
+        auto chain_opt = ctx_.chain_store->get(chain_id);
+        if (!chain_opt) {
+            res.status = 404;
+            res.set_content(R"({"error":"run not found"})", "application/json");
+            return;
+        }
+        json j;
+        j["chain_id"] = chain_opt->id;
+        j["name"] = chain_opt->name;
+        j["description"] = chain_opt->description;
+        j["created_at_ms"] = chain_opt->created_at_ms;
+        j["artifact_count"] = chain_opt->artifact_ids.size();
+
+        // Fetch artifacts
+        if (ctx_.artifact_store) {
+            ArtifactFilter filter;
+            filter.chain_id = chain_id;
+            auto arts = ctx_.artifact_store->list(filter);
+            json arts_arr = json::array();
+            for (const auto& a : arts) {
+                arts_arr.push_back({
+                    {"id", a.id},
+                    {"type", artifact_type_to_string(a.type)},
+                    {"title", a.title},
+                    {"content_preview", a.content.substr(0, 500)},
+                    {"state", artifact_state_to_string(a.state)},
+                });
+            }
+            j["artifacts"] = arts_arr;
+        }
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // History — list past runs
+    // GET /api/history?limit=50
+    // -----------------------------------------------------------------------
+    svr.Get("/api/history", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.chain_store) {
+            res.set_content(R"({"runs":[]})", "application/json");
+            return;
+        }
+        // List chains as run history
+        auto chains = ctx_.chain_store->list(100);
+        json j = json::array();
+        for (const auto& c : chains) {
+            j.push_back({
+                {"chain_id", c.id},
+                {"name", c.name},
+                {"description", c.description},
+                {"artifact_count", c.artifact_ids.size()},
+                {"created_at_ms", c.created_at_ms},
+            });
+        }
+        json resp;
+        resp["runs"] = j;
+        resp["count"] = j.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Budget — get agent budget
+    // GET /api/agents/:id/budget
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/agents/(\d+)/budget)", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        auto& budget = ctx_.permissions_store.get_or_create_budget(id);
+        res.set_content(budget.to_json().dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Budget — set agent budget
+    // POST /api/agents/:id/budget  {"max_tokens": N, "max_cost_usd": N}
+    // -----------------------------------------------------------------------
+    svr.Post(R"(/api/agents/(\d+)/budget)", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        try {
+            auto body = json::parse(req.body);
+            auto& budget = ctx_.permissions_store.get_or_create_budget(id);
+            if (body.contains("max_tokens")) budget.max_tokens = body["max_tokens"].get<uint64_t>();
+            if (body.contains("max_cost_usd")) budget.max_cost_usd = body["max_cost_usd"].get<double>();
+            if (body.contains("max_steps")) budget.max_steps = body["max_steps"].get<uint64_t>();
+            if (body.contains("max_time_ms")) budget.max_time_ms = body["max_time_ms"].get<uint64_t>();
+            if (body.contains("kill_on_exceeded")) budget.kill_on_exceeded = body["kill_on_exceeded"].get<bool>();
+            res.set_content(budget.to_json().dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid JSON: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // KV Store — write
+    // POST /api/store  {"key": "...", "value": "..."}
+    // -----------------------------------------------------------------------
+    svr.Post("/api/store", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string key = body.value("key", "");
+            std::string value = body.value("value", "");
+            if (key.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"key is required"})", "application/json");
+                return;
+            }
+            ctx_.state_store.store(key, value, 0);
+            res.set_content(R"({"success":true})", "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid JSON: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // KV Store — read
+    // GET /api/store/:key
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/store/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string key = req.matches[1];
+        auto val = ctx_.state_store.fetch(key, 0);
+        if (val) {
+            json j;
+            j["key"] = key;
+            j["value"] = *val;
+            res.set_content(j.dump(), "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"key not found"})", "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // MCP — call a tool
+    // POST /api/mcp/call  {"server": "...", "tool": "...", "arguments": {...}}
+    // -----------------------------------------------------------------------
+    svr.Post("/api/mcp/call", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.mcp_bridge) {
+            res.status = 503;
+            res.set_content(R"({"error":"MCP bridge not enabled. Start with --mcp"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            std::string server = body.value("server", "");
+            std::string tool = body.value("tool", "");
+            auto args = body.value("arguments", json::object());
+
+            if (server.empty() || tool.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"server and tool are required"})", "application/json");
+                return;
+            }
+
+            auto result = ctx_.mcp_bridge->call_tool(0, server, tool, args);
+            json j;
+            j["success"] = result.success;
+            j["content"] = result.content;
+            j["duration_ms"] = result.duration_ms;
+            if (!result.error.empty()) j["error"] = result.error;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid JSON: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // System cost — total spend
+    // GET /api/cost
+    // -----------------------------------------------------------------------
+    svr.Get("/api/cost", [this](const httplib::Request&, httplib::Response& res) {
+        auto gw = ctx_.inference_gateway.get_config();
+        json j;
+        j["total_cost_usd"] = gw.current_cost_usd;
+        j["max_cost_usd"] = gw.max_cost_usd;
+        j["total_requests"] = ctx_.llm_queue ? ctx_.llm_queue->total_requests() : 0;
+        j["total_completed"] = ctx_.llm_queue ? ctx_.llm_queue->total_completed() : 0;
+        res.set_content(j.dump(), "application/json");
     });
 }
 

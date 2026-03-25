@@ -1,5 +1,4 @@
 #include <clove/memory_block_store.hpp>
-#include <clove/artifact.hpp>  // for generate_hex_id, now_ms
 #include <algorithm>
 
 namespace clove {

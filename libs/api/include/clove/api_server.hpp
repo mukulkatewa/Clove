@@ -22,6 +22,12 @@ class McpBridge;
 class A2aBridge;
 class TunnelBridge;
 class WorldEngine;
+class LlmQueue;
+class ArtifactStore;
+class ChainStore;
+class ContextAssembler;
+class MemoryBlockStore;
+class OpenRouterClient;
 
 struct ApiContext {
     KernelConfig& config;
@@ -34,10 +40,17 @@ struct ApiContext {
     AuditLogger& audit_logger;
     ExecutionLogger& execution_logger;
     PolicyRecommender& policy_recommender;
-    McpBridge* mcp_bridge;      // nullable
-    A2aBridge* a2a_bridge;      // nullable
-    TunnelBridge* tunnel_bridge; // nullable
-    WorldEngine* world_engine;   // nullable
+    McpBridge* mcp_bridge;            // nullable
+    A2aBridge* a2a_bridge;            // nullable
+    TunnelBridge* tunnel_bridge;      // nullable
+    WorldEngine* world_engine;        // nullable
+    // New: subsystems for /api/think, /api/run, /api/fleet
+    LlmQueue* llm_queue;             // nullable
+    ArtifactStore* artifact_store;    // nullable
+    ChainStore* chain_store;          // nullable
+    ContextAssembler* assembler;      // nullable
+    MemoryBlockStore* memory_blocks;  // nullable
+    OpenRouterClient* openrouter;     // nullable
 };
 
 class ApiServer {

@@ -1,17 +1,13 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
 #include <vector>
+#include <clove/context_utils.hpp>
 
 namespace clove {
-
-// From artifact.hpp
-inline std::string generate_hex_id(size_t len = 12);
-inline uint64_t now_ms();
 
 enum class MemoryBlockType : uint8_t {
     SYSTEM = 0,   // Pinned at top of context, agent cannot edit

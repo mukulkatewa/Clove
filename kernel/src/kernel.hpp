@@ -42,6 +42,7 @@ class ArtifactStoreDb;
 class MemoryBlockStore;
 class MemoryBlockDb;
 class AgentScheduler;
+class OpenRouterClient;
 struct KernelContext;
 struct Manifest;
 
@@ -99,6 +100,7 @@ private:
     std::unique_ptr<MemoryBlockStore> memory_block_store_;
     std::unique_ptr<MemoryBlockDb> memory_block_db_;
     std::unique_ptr<AgentScheduler> scheduler_;
+    std::shared_ptr<OpenRouterClient> openrouter_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

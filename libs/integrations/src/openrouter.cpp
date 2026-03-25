@@ -142,6 +142,8 @@ OpenRouterResponse OpenRouterClient::chat_messages(const std::string& model,
     if (options.contains("top_p"))        body["top_p"] = options["top_p"];
     if (options.contains("stop"))         body["stop"] = options["stop"];
     if (options.contains("stream"))       body["stream"] = options["stream"];
+    if (options.contains("tools"))        body["tools"] = options["tools"];
+    if (options.contains("tool_choice"))  body["tool_choice"] = options["tool_choice"];
 
     // Provider preferences
     if (config_.zero_data_retention) {
@@ -188,8 +190,11 @@ OpenRouterResponse OpenRouterClient::parse_chat_response(const HttpResponse& htt
 
         if (j.contains("choices") && !j["choices"].empty()) {
             auto& choice = j["choices"][0];
-            if (choice.contains("message") && choice["message"].contains("content")) {
-                resp.content = choice["message"]["content"].get<std::string>();
+            if (choice.contains("message")) {
+                auto& msg = choice["message"];
+                if (msg.contains("content") && msg["content"].is_string()) {
+                    resp.content = msg["content"].get<std::string>();
+                }
             }
         }
 

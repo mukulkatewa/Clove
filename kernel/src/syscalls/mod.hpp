@@ -10,6 +10,12 @@
 
 namespace clove {
 
+// Forward declarations needed by handler classes below
+class ContextAssembler;
+class AgentScheduler;
+class MemoryBlockStore;
+class MemoryBlockDb;
+
 // Base class for syscall handler modules
 class KernelModule {
 public:

@@ -1,6 +1,6 @@
 # CLOVE v2 — Roadmap
 
-> Last updated: 2026-03-23
+> Last updated: 2026-03-25
 
 ## Status: 86 syscalls defined, all handler files implemented
 
@@ -71,29 +71,61 @@
 ### Infrastructure
 | Feature | Notes |
 |---------|-------|
-| REST API | 34 HTTP routes, Bearer auth, HTMX dashboard |
-| CLI | 13 commands |
+| REST API | 46 HTTP routes, Bearer auth, HTMX dashboard |
+| RunEngine | Built-in agent with tool-calling loop — `POST /api/run` |
+| SSE Streaming | Real-time event streaming — `POST /api/run/stream` |
+| Fleet | Parallel multi-agent execution — `POST /api/fleet` |
+| CLI | 13 commands (C++ CLI) |
 | Python SDK | 86 syscall methods, Agent class with @tool decorator |
+| TypeScript SDK | Full port, 1,305 LOC, all 86 syscalls |
 | SQLite Persistence | WAL mode, write-through for state/artifacts/chains/memory blocks |
 | Docker | Multi-stage Alpine build, docker-compose |
 | systemd | Hardened service file |
+
+### RunEngine Tools (real kernel operations, not stubs)
+| Tool | Kernel operation | Notes |
+|------|-----------------|-------|
+| `read_file` | `ifstream` — real file read | Audited |
+| `write_file` | `ofstream` — real file write | Audited, stored as artifact |
+| `exec` | `popen` — real shell execution | Audited, output capped at 512KB |
+| `http` | CURL — real HTTP requests | Audited, 30s timeout |
+| `search` | CURL to DuckDuckGo + LLM extraction | Real web search |
+| `store`/`fetch` | Kernel state store | KV with TTL |
+| `remember`/`recall` | Memory blocks | Persistent across runs |
+| `mcp_*` | MCP bridge | Any connected MCP server |
 
 ---
 
 ## Not Yet Done
 
-### Engineering (in priority order)
+### API Gaps (kernel has it, API doesn't expose it yet)
+| Feature | Syscalls | Effort | Why |
+|---------|----------|--------|-----|
+| Pause/Resume agents | SYS_PAUSE, SYS_RESUME | Small | Throttle runaway agents |
+| IPC messaging API | SYS_SEND, SYS_RECV | Small | Agent-to-agent coordination |
+| KV delete + list keys | SYS_DELETE, SYS_KEYS | Small | Data management |
+| Memory CRUD API | SYS_MEM_WRITE/DELETE/LIST/SHARE | Small | Full memory control |
+| Context assembly in RunEngine | SYS_CONTEXT_ASSEMBLE | Medium | Research optimizations active |
+| World snapshot/restore | SYS_WORLD_SNAPSHOT/RESTORE | Small | Save/fork agent environments |
+| Replay via API | SYS_REPLAY_START/STATUS | Small | Debug past runs |
+| Event streaming | SYS_POLL_EVENTS | Medium | Real-time kernel event SSE |
+| Tunnel API | SYS_TUNNEL_* | Medium | Cross-kernel federation |
+| A2A API | SYS_A2A_SEND/RECV | Small | External agent interop |
+| OTel export | SYS_OTEL_SPAN | Small | Production observability |
+
+### Engineering
 | Feature | Effort | Why |
 |---------|--------|-----|
-| End-to-end integration test | Small | Verify kernel + SDK work together |
+| End-to-end integration test | Small | Verify kernel + SDK + API work together |
 | macOS sandbox improvement | Medium | Currently fork-only, no isolation |
 | Subgoal compression in ContextAssembler | Small | Summarize completed subtasks |
+| Multi-model cascading in RunEngine | Medium | Cheap model for simple, expensive for hard |
 
-### Compliance (deferred)
+### Compliance (deadline: Aug 2, 2026)
 | Feature | Why |
 |---------|-----|
-| Audit log retention policy + JSONL export | EU AI Act (Aug 2026) |
-| OWASP ASI Top 10 mapping doc | Enterprise sales positioning |
+| Audit log retention policy + JSONL export | EU AI Act |
+| OWASP ASI Top 10 mapping doc | Enterprise sales |
 | Immutable audit log guarantee | Compliance requirement |
 
 ---

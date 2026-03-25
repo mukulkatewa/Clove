@@ -11,12 +11,14 @@
 
 A C++23 microkernel runtime that runs AI agent processes with:
 - OS-level isolation (namespaces, cgroups, Landlock, seccomp)
-- 66 syscalls via binary IPC protocol (17-byte header, Unix sockets)
+- 86 syscalls via binary IPC protocol (17-byte header, Unix sockets)
 - Multi-agent orchestration (state store, event bus, mailboxes, 0.02ms IPC)
-- 300+ LLM models via OpenRouter
+- 300+ LLM models via OpenRouter (7 providers auto-detected)
 - PII filtering, cost controls, audit logging, execution replay
-- REST API, CLI, Python SDK, HTMX dashboard
-- 124 tests, ~14K LOC C++
+- REST API (46 endpoints), CLI, Python SDK, TypeScript SDK, HTMX dashboard
+- Built-in agent runner with tool-calling loop (POST /api/run)
+- Parallel fleet execution with SSE streaming (POST /api/fleet)
+- 165 tests, ~16.8K LOC C++
 
 **In plain language:** An operating system for AI agents. Agents run as processes, the kernel manages them.
 
@@ -78,7 +80,7 @@ Same job: sandbox AI agents. Different approach:
 | Throughput | 54K ops/sec | ~6 ops/sec |
 | Memory | 2.8 MB | ~907 MB |
 | Binary size | 2.1 MB | ~3,550 MB |
-| Multi-agent | Yes (66 syscalls) | No (single agent) |
+| Multi-agent | Yes (86 syscalls) | No (single agent) |
 | Backing | $0, 3 people | NVIDIA, 8 enterprise partners |
 
 **CLOVE wins on tech. OpenShell wins on distribution and brand.**
@@ -134,7 +136,7 @@ Docker could add agent sandboxing profiles, cost controls, audit logging. K8s co
 - **Multi-agent:** Real but market may not be ready (see Q1)
 - **Execution replay:** Genuinely unique, nobody else has it
 - **Binary size (2MB):** Cool but not a buying criterion
-- **66 syscalls:** Impressive engineering but users don't buy syscalls
+- **86 syscalls:** Impressive engineering but users don't buy syscalls
 
 **Honest moat assessment:** Execution replay + audit trail is the most defensible feature. It's unique, hard to replicate, and maps to a real buyer need (compliance).
 
@@ -271,7 +273,7 @@ Docker could add agent sandboxing profiles, cost controls, audit logging. K8s co
 ## Part 7: What We Know vs What We Don't
 
 ### What we KNOW:
-- The technology works (14K LOC, 124 tests, benchmarks verified)
+- The technology works (16.8K LOC, 165 tests, 46 API endpoints, benchmarks verified)
 - Agent security is a real problem (documented incidents, regulatory mandates)
 - OpenShell is technically inferior (benchmarks prove it)
 - Execution replay is unique and nobody else has it

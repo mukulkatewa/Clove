@@ -2,9 +2,11 @@
 
 **Version:** 2.0.0
 **Language:** C++23
-**Codebase:** 13,828 LOC (99 source files) + 645 LOC Python SDK + 1,372 LOC tests
-**Libraries:** 13 modular static libraries + 2 binaries (kernel, CLI)
+**Codebase:** 16,800+ LOC (119 source files) + 878 LOC Python SDK + 1,305 LOC TypeScript SDK
+**Libraries:** 14 modular static libraries + 2 binaries (kernel, CLI)
 **Syscalls:** 86 opcodes over binary IPC protocol
+**Tests:** 165 (Catch2)
+**REST API:** 46 endpoints including agent runner, fleet, SSE streaming
 
 ---
 
@@ -484,7 +486,7 @@ clove help                           — usage
 
 ## 16. Testing
 
-- **124 test cases**, **292 assertions**
+- **165 test cases**, **292 assertions**
 - Framework: Catch2 v3.5.2
 - 16 test files covering: protocol, state store, mailbox, event bus, permissions, privacy filter, audit log, execution log, inference gateway, policy recommender, MCP bridge, database/persistence, tunnel bridge, world engine, A2A bridge, execution replay
 
@@ -550,7 +552,7 @@ clove help                           — usage
 
 | Capability | CLOVE | OpenShell |
 |------------|-------|-----------|
-| Multi-agent orchestration | Yes (66 syscalls, IPC, event bus, mailboxes) | No (single-agent sandboxing) |
+| Multi-agent orchestration | Yes (86 syscalls, IPC, event bus, mailboxes) | No (single-agent sandboxing) |
 | Agent-to-agent messaging | 0.02ms binary IPC | N/A |
 | Shared state store | Built-in KV with TTL, scopes | N/A |
 | Pub/sub event bus | 12 event types, per-agent queues | N/A |

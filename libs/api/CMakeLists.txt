@@ -1,5 +1,6 @@
 add_library(clove_api STATIC
     src/api_server.cpp
+    src/run_engine.cpp
 )
 target_include_directories(clove_api PUBLIC include)
 target_link_libraries(clove_api PUBLIC
@@ -9,6 +10,8 @@ target_link_libraries(clove_api PUBLIC
     clove_governance
     clove_integrations
     clove_worlds
+    clove_context
+    clove_persistence
     nlohmann_json::nlohmann_json
     httplib::httplib
     Threads::Threads
