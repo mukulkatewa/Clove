@@ -77,6 +77,11 @@ private:
     bool apply_landlock();
     bool apply_seccomp();
 #endif
+
+#ifdef __APPLE__
+    std::string generate_seatbelt_profile() const;
+    bool apply_seatbelt();
+#endif
 };
 
 class SandboxManager {

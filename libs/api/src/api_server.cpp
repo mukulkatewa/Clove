@@ -22,6 +22,8 @@
 #include <clove/context_assembler.hpp>
 #include <clove/memory_block_store.hpp>
 #include <clove/run_engine.hpp>
+#include <clove/openclaw_manager.hpp>
+#include <clove/mailbox.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -139,7 +141,7 @@ void ApiServer::setup_routes() {
         j["status"] = "ok";
         j["version"] = "2.0.0";
         j["uptime_s"] = uptime;
-        j["syscall_count"] = 66;
+        j["syscall_count"] = 86;
         res.set_content(j.dump(), "application/json");
     });
 
@@ -934,6 +936,124 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
+    // OpenAI-compatible chat completions endpoint
+    // POST /api/v1/chat/completions
+    //
+    // Drop-in replacement for OpenAI's API. Any tool that speaks OpenAI format
+    // (OpenClaw, LangChain, Cursor, Continue, etc.) can point at this endpoint
+    // and get cost tracking, PII filtering, and audit for free.
+    // -----------------------------------------------------------------------
+    svr.Post("/api/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            json err;
+            err["error"] = json{{"message", "LLM not configured. Set OPENROUTER_API_KEY."}, {"type", "server_error"}};
+            res.set_content(err.dump(), "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            std::string model = body.value("model", ctx_.config.llm_model);
+            auto messages = body.value("messages", json::array());
+
+            if (messages.empty()) {
+                res.status = 400;
+                json err;
+                err["error"] = json{{"message", "messages is required"}, {"type", "invalid_request_error"}};
+                res.set_content(err.dump(), "application/json");
+                return;
+            }
+
+            // PII filter on all user messages
+            size_t pii_count = 0;
+            if (ctx_.privacy_filter.is_enabled()) {
+                for (auto& msg : messages) {
+                    if (msg.value("role", "") == "user" && msg.contains("content") && msg["content"].is_string()) {
+                        auto pii_result = ctx_.privacy_filter.redact(msg["content"].get<std::string>());
+                        msg["content"] = pii_result.cleaned_text;
+                        pii_count += pii_result.matches.size();
+                    }
+                }
+            }
+
+            // Strip "clove/" prefix from model name if present (e.g. "clove/anthropic/claude-sonnet-4" → "anthropic/claude-sonnet-4")
+            if (model.substr(0, 6) == "clove/") {
+                model = model.substr(6);
+            }
+            // Map "auto" to kernel's configured model
+            if (model == "auto" || model.empty()) {
+                model = ctx_.config.llm_model;
+            }
+
+            // Call LLM via OpenRouter
+            auto llm_resp = ctx_.openrouter->chat_messages(model, messages);
+
+            // Track cost
+            if (llm_resp.success) {
+                ctx_.inference_gateway.record_cost(llm_resp.usage.cost_usd);
+            }
+
+            // Audit
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "CHAT_COMPLETION",
+                0, "", {
+                    {"model", llm_resp.model_used},
+                    {"tokens", llm_resp.usage.total_tokens},
+                    {"cost_usd", llm_resp.usage.cost_usd},
+                    {"pii_redacted", pii_count},
+                });
+
+            // Generate a unique ID
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+            std::string id = "chatcmpl-clove-" + std::to_string(ms);
+
+            // Return OpenAI-compatible response
+            json resp;
+            resp["id"] = id;
+            resp["object"] = "chat.completion";
+            resp["created"] = ms / 1000;
+            resp["model"] = llm_resp.model_used;
+
+            json choice;
+            choice["index"] = 0;
+            choice["message"] = json{{"role", "assistant"}, {"content", llm_resp.content}};
+            choice["finish_reason"] = "stop";
+            resp["choices"] = json::array({choice});
+
+            json usage;
+            usage["prompt_tokens"] = llm_resp.usage.prompt_tokens;
+            usage["completion_tokens"] = llm_resp.usage.completion_tokens;
+            usage["total_tokens"] = llm_resp.usage.total_tokens;
+            resp["usage"] = usage;
+
+            // Extra CLOVE fields (non-standard but useful)
+            resp["clove"] = json{
+                {"cost_usd", llm_resp.usage.cost_usd},
+                {"pii_redacted", pii_count},
+                {"audited", true},
+            };
+
+            res.set_content(resp.dump(), "application/json");
+
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json err;
+            err["error"] = json{{"message", std::string("invalid request: ") + e.what()}, {"type", "invalid_request_error"}};
+            res.set_content(err.dump(), "application/json");
+        }
+    });
+
+    // Also handle /v1/chat/completions (without /api prefix — matches OpenAI's URL structure)
+    svr.Post("/v1/chat/completions", [this](const httplib::Request& req, httplib::Response& res) {
+        // Forward to the /api/v1 handler by re-dispatching
+        // For simplicity, duplicate the lambda reference — httplib doesn't support redirect
+        // Instead, just tell clients to use /api/v1/chat/completions
+        res.status = 308;
+        res.set_header("Location", "/api/v1/chat/completions");
+        res.set_content(R"({"error":"Use /api/v1/chat/completions"})", "application/json");
+    });
+
+    // -----------------------------------------------------------------------
     // Run — full agent tool-calling loop (synchronous)
     // POST /api/run  {"goal": "...", "budget": 0.50, "tools": [...], "model": "..."}
     // -----------------------------------------------------------------------
@@ -961,7 +1081,7 @@ void ApiServer::setup_routes() {
             }
 
             RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
-                             ctx_.audit_logger, ctx_.state_store,
+                             ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                              ctx_.artifact_store, ctx_.chain_store,
                              ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler,
                              ctx_.config);
@@ -1035,14 +1155,15 @@ void ApiServer::setup_routes() {
         auto* memory = ctx_.memory_blocks;
         auto* mcp = ctx_.mcp_bridge;
         auto* assembler = ctx_.assembler;
+        auto* perms = &ctx_.permissions_store;
         auto* config = &ctx_.config;
 
         res.set_chunked_content_provider(
             "text/event-stream",
-            [openrouter, gateway, privacy, audit, state, artifacts, chains, memory, mcp, assembler, config, cfg]
+            [openrouter, gateway, privacy, audit, state, perms, artifacts, chains, memory, mcp, assembler, config, cfg]
             (size_t /*offset*/, httplib::DataSink& sink) -> bool {
 
-                RunEngine engine(*openrouter, *gateway, *privacy, *audit, *state,
+                RunEngine engine(*openrouter, *gateway, *privacy, *audit, *state, *perms,
                                  artifacts, chains, memory, mcp, assembler, *config);
 
                 auto result = engine.execute(cfg, [&sink](const RunEvent& ev) {
@@ -1123,6 +1244,7 @@ void ApiServer::setup_routes() {
         auto* memory = ctx_.memory_blocks;
         auto* mcp = ctx_.mcp_bridge;
         auto* assembler = ctx_.assembler;
+        auto* perms = &ctx_.permissions_store;
         auto* config = &ctx_.config;
 
         res.set_chunked_content_provider(
@@ -1163,7 +1285,7 @@ void ApiServer::setup_routes() {
                         cfg.agent_name = "agent-" + std::to_string(i + 1);
 
                         RunEngine engine(*openrouter, *gateway, *privacy, *audit,
-                                         *state, artifacts, chains, memory, mcp, assembler, *config);
+                                         *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
 
                         results[i] = engine.execute(cfg, [&, i](const RunEvent& ev) {
                             json wrapped;
@@ -1467,6 +1589,556 @@ void ApiServer::setup_routes() {
         j["total_requests"] = ctx_.llm_queue ? ctx_.llm_queue->total_requests() : 0;
         j["total_completed"] = ctx_.llm_queue ? ctx_.llm_queue->total_completed() : 0;
         res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Memory — list blocks
+    // GET /api/memory
+    // -----------------------------------------------------------------------
+    svr.Get("/api/memory", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.set_content(R"({"blocks":[]})", "application/json");
+            return;
+        }
+        auto blocks = ctx_.memory_blocks->list(0, 100);
+        json j = json::array();
+        for (const auto& b : blocks) {
+            j.push_back(memory_block_to_json(b));
+        }
+        json resp;
+        resp["blocks"] = j;
+        resp["count"] = j.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Memory — create block
+    // POST /api/memory  {"name": "...", "type": "core", "content": "..."}
+    // -----------------------------------------------------------------------
+    svr.Post("/api/memory", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.status = 503;
+            res.set_content(R"({"error":"memory blocks not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            std::string type_str = body.value("type", "core");
+            std::string content = body.value("content", "");
+            std::string access_str = body.value("access", "private");
+
+            if (name.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"name is required"})", "application/json");
+                return;
+            }
+
+            auto block = ctx_.memory_blocks->create(0, name,
+                memory_block_type_from_string(type_str),
+                memory_access_from_string(access_str),
+                content, 0);
+            res.status = 201;
+            res.set_content(memory_block_to_json(block).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Memory — read block
+    // GET /api/memory/:id
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/memory/([a-z0-9_]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.status = 503;
+            res.set_content(R"({"error":"memory blocks not available"})", "application/json");
+            return;
+        }
+        std::string id = req.matches[1];
+        auto opt = ctx_.memory_blocks->get(id, 0);
+        if (!opt) {
+            // Try by name
+            opt = ctx_.memory_blocks->get_by_name(id, 0);
+        }
+        if (opt) {
+            res.set_content(memory_block_to_json(*opt).dump(), "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"memory block not found"})", "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Memory — update block content
+    // PUT /api/memory/:id  {"content": "..."}
+    // -----------------------------------------------------------------------
+    svr.Put(R"(/api/memory/([a-z0-9_]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.status = 503;
+            res.set_content(R"({"error":"memory blocks not available"})", "application/json");
+            return;
+        }
+        std::string id = req.matches[1];
+        try {
+            auto body = json::parse(req.body);
+            std::string content = body.value("content", "");
+            if (ctx_.memory_blocks->write(id, content, 0)) {
+                auto opt = ctx_.memory_blocks->get(id, 0);
+                if (opt) {
+                    res.set_content(memory_block_to_json(*opt).dump(), "application/json");
+                } else {
+                    res.set_content(R"({"success":true})", "application/json");
+                }
+            } else {
+                res.status = 404;
+                res.set_content(R"({"error":"block not found or no access"})", "application/json");
+            }
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Memory — delete block
+    // DELETE /api/memory/:id
+    // -----------------------------------------------------------------------
+    svr.Delete(R"(/api/memory/([a-z0-9_]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.status = 503;
+            res.set_content(R"({"error":"memory blocks not available"})", "application/json");
+            return;
+        }
+        std::string id = req.matches[1];
+        if (ctx_.memory_blocks->remove(id, 0)) {
+            res.set_content(R"({"success":true})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"block not found or not owner"})", "application/json");
+        }
+    });
+
+    // ===================================================================
+    // ===================================================================
+    // IPC — Agent-to-Agent Messaging
+    // ===================================================================
+
+    // POST /api/agents/:id/message  {"to": 1, "content": "..."}
+    svr.Post(R"(/api/agents/(\d+)/message)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.mailbox) {
+            res.status = 503;
+            res.set_content(R"({"error":"mailbox not available"})", "application/json");
+            return;
+        }
+        try {
+            uint32_t from_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+            auto body = json::parse(req.body);
+            std::string content = body.value("content", "");
+
+            if (content.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"content is required"})", "application/json");
+                return;
+            }
+
+            bool ok = false;
+            if (body.contains("to")) {
+                if (body["to"].is_number()) {
+                    ok = ctx_.mailbox->send(from_id, body["to"].get<uint32_t>(), content);
+                } else if (body["to"].is_string()) {
+                    ok = ctx_.mailbox->send_by_name(from_id, body["to"].get<std::string>(), content);
+                }
+            }
+
+            if (ok) {
+                res.set_content(R"({"success":true})", "application/json");
+            } else {
+                res.status = 404;
+                res.set_content(R"({"error":"recipient not found"})", "application/json");
+            }
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // GET /api/agents/:id/messages
+    svr.Get(R"(/api/agents/(\d+)/messages)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.mailbox) {
+            res.set_content(R"({"messages":[]})", "application/json");
+            return;
+        }
+        uint32_t agent_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        auto msgs = ctx_.mailbox->receive(agent_id, 100);
+        json arr = json::array();
+        for (const auto& m : msgs) {
+            arr.push_back(json{
+                {"from", m.from_agent_id},
+                {"to", m.to_agent_id},
+                {"content", m.content},
+                {"timestamp_ms", m.timestamp_ms},
+            });
+        }
+        json resp;
+        resp["messages"] = arr;
+        resp["count"] = arr.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // POST /api/broadcast  {"from": 0, "content": "..."}
+    svr.Post("/api/broadcast", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.mailbox) {
+            res.status = 503;
+            res.set_content(R"({"error":"mailbox not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            uint32_t from = body.value("from", static_cast<uint32_t>(0));
+            std::string content = body.value("content", "");
+            if (content.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"content is required"})", "application/json");
+                return;
+            }
+            ctx_.mailbox->broadcast(from, content);
+            res.set_content(R"({"success":true})", "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // ===================================================================
+    // Scheduling — cron-based recurring runs
+    // ===================================================================
+
+    // In-memory schedule store (persisted via state store)
+    // POST /api/schedules  {"name": "...", "cron": "...", "run": {...}}
+    svr.Post("/api/schedules", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            std::string cron = body.value("cron", "");
+            auto run_cfg = body.value("run", json::object());
+
+            if (name.empty() || cron.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"name and cron are required"})", "application/json");
+                return;
+            }
+
+            // Store schedule in state store
+            json schedule;
+            schedule["name"] = name;
+            schedule["cron"] = cron;
+            schedule["run"] = run_cfg;
+            schedule["enabled"] = true;
+            schedule["created_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+            ctx_.state_store.store("schedule:" + name, schedule, 0, "global");
+
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "SCHEDULE_CREATED", 0, "", {
+                {"name", name}, {"cron", cron},
+            });
+
+            res.status = 201;
+            res.set_content(schedule.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // GET /api/schedules
+    svr.Get("/api/schedules", [this](const httplib::Request&, httplib::Response& res) {
+        auto all_keys = ctx_.state_store.keys("", 0);
+        json arr = json::array();
+        for (const auto& key : all_keys) {
+            if (key.substr(0, 9) == "schedule:") {
+                auto val = ctx_.state_store.fetch(key, 0);
+                if (val) {
+                    try { arr.push_back(*val); } catch (...) {}
+                }
+            }
+        }
+        json resp;
+        resp["schedules"] = arr;
+        resp["count"] = arr.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // DELETE /api/schedules/:name
+    svr.Delete(R"(/api/schedules/([a-zA-Z0-9_-]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        bool removed = ctx_.state_store.erase("schedule:" + name, 0);
+        if (removed) {
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "SCHEDULE_DELETED", 0, "", {{"name", name}});
+            res.set_content(R"({"success":true})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"schedule not found"})", "application/json");
+        }
+    });
+
+    // ===================================================================
+    // Webhooks — notify external services on events
+    // ===================================================================
+
+    // POST /api/webhooks  {"url": "...", "events": ["run_complete", ...]}
+    svr.Post("/api/webhooks", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string url = body.value("url", "");
+            auto events = body.value("events", json::array());
+
+            if (url.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"url is required"})", "application/json");
+                return;
+            }
+
+            json webhook;
+            webhook["url"] = url;
+            webhook["events"] = events;
+            webhook["enabled"] = true;
+            webhook["created_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+            // Generate webhook ID
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            std::string id = "wh_" + std::to_string(ms);
+            webhook["id"] = id;
+
+            ctx_.state_store.store("webhook:" + id, webhook, 0, "global");
+
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "WEBHOOK_CREATED", 0, "", {
+                {"id", id}, {"url", url}, {"events", events},
+            });
+
+            res.status = 201;
+            res.set_content(webhook.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // GET /api/webhooks
+    svr.Get("/api/webhooks", [this](const httplib::Request&, httplib::Response& res) {
+        auto all_keys = ctx_.state_store.keys("", 0);
+        json arr = json::array();
+        for (const auto& key : all_keys) {
+            if (key.substr(0, 8) == "webhook:") {
+                auto val = ctx_.state_store.fetch(key, 0);
+                if (val) {
+                    try { arr.push_back(*val); } catch (...) {}
+                }
+            }
+        }
+        json resp;
+        resp["webhooks"] = arr;
+        resp["count"] = arr.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // DELETE /api/webhooks/:id
+    svr.Delete(R"(/api/webhooks/(wh_[0-9]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string id = req.matches[1];
+        bool removed = ctx_.state_store.erase("webhook:" + id, 0);
+        if (removed) {
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "WEBHOOK_DELETED", 0, "", {{"id", id}});
+            res.set_content(R"({"success":true})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"webhook not found"})", "application/json");
+        }
+    });
+
+    // ===================================================================
+    // OpenClaw Module — spawn and manage OpenClaw instances
+    // ===================================================================
+
+    // POST /api/openclaw/spawn
+    svr.Post("/api/openclaw/spawn", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openclaw) {
+            res.status = 503;
+            res.set_content(R"({"error":"OpenClaw module not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            OpenClawInstanceConfig cfg;
+            cfg.name = body.value("name", "openclaw");
+            cfg.soul = body.value("soul", "");
+            cfg.model = body.value("model", "");
+            cfg.budget_usd = body.value("budget_usd", 10.0);
+            cfg.sandbox_memory_mb = body.value("memory_mb", 512);
+            cfg.sandbox_cpu_percent = body.value("cpu_percent", 50);
+
+            if (body.contains("channels")) {
+                for (const auto& ch : body["channels"]) cfg.channels.push_back(ch.get<std::string>());
+            }
+            if (body.contains("skills")) {
+                for (const auto& s : body["skills"]) cfg.skills.push_back(s.get<std::string>());
+            }
+            if (body.contains("allowed_domains")) {
+                for (const auto& d : body["allowed_domains"]) cfg.allowed_domains.push_back(d.get<std::string>());
+            }
+            if (body.contains("allowed_read_paths")) {
+                for (const auto& p : body["allowed_read_paths"]) cfg.allowed_read_paths.push_back(p.get<std::string>());
+            }
+            if (body.contains("allowed_write_paths")) {
+                for (const auto& p : body["allowed_write_paths"]) cfg.allowed_write_paths.push_back(p.get<std::string>());
+            }
+
+            std::string id = ctx_.openclaw->spawn(cfg);
+            if (id.empty()) {
+                res.status = 500;
+                res.set_content(R"({"error":"Failed to spawn OpenClaw instance. Check logs."})", "application/json");
+                return;
+            }
+
+            const auto* inst = ctx_.openclaw->get(id);
+            json j;
+            j["id"] = id;
+            j["name"] = cfg.name;
+            j["state"] = inst ? inst->state : "unknown";
+            j["port"] = inst ? inst->api_port : 0;
+            j["budget_usd"] = cfg.budget_usd;
+            j["sandbox"] = "seatbelt";
+            res.status = 201;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // GET /api/openclaw/status
+    svr.Get("/api/openclaw/status", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ctx_.openclaw) {
+            res.set_content(R"({"instances":[],"count":0})", "application/json");
+            return;
+        }
+        auto instances = ctx_.openclaw->list();
+        json arr = json::array();
+        for (const auto* inst : instances) {
+            json j;
+            j["id"] = inst->id;
+            j["name"] = inst->name;
+            j["state"] = inst->state;
+            j["port"] = inst->api_port;
+            j["budget_usd"] = inst->config.budget_usd;
+            j["cost_usd"] = inst->cost_usd;
+            j["pid"] = inst->sandbox ? inst->sandbox->pid() : -1;
+            j["started_at_ms"] = inst->started_at_ms;
+            j["channels"] = inst->config.channels;
+            arr.push_back(j);
+        }
+        json resp;
+        resp["instances"] = arr;
+        resp["count"] = instances.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // POST /api/openclaw/:id/stop
+    svr.Post(R"(/api/openclaw/([a-z0-9_]+)/stop)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openclaw) {
+            res.status = 503;
+            res.set_content(R"({"error":"OpenClaw module not available"})", "application/json");
+            return;
+        }
+        std::string id = req.matches[1];
+        if (ctx_.openclaw->stop(id)) {
+            res.set_content(R"({"success":true})", "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"instance not found"})", "application/json");
+        }
+    });
+
+    // POST /api/openclaw/fleet — spawn multiple instances
+    svr.Post("/api/openclaw/fleet", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openclaw) {
+            res.status = 503;
+            res.set_content(R"({"error":"OpenClaw module not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            auto agents_arr = body.value("agents", json::array());
+
+            std::vector<OpenClawInstanceConfig> configs;
+            for (const auto& a : agents_arr) {
+                OpenClawInstanceConfig cfg;
+                cfg.name = a.value("name", "agent-" + std::to_string(configs.size() + 1));
+                cfg.soul = a.value("soul", "");
+                cfg.model = a.value("model", "");
+                cfg.budget_usd = a.value("budget_usd", 5.0);
+                if (a.contains("channels")) {
+                    for (const auto& ch : a["channels"]) cfg.channels.push_back(ch.get<std::string>());
+                }
+                if (a.contains("skills")) {
+                    for (const auto& s : a["skills"]) cfg.skills.push_back(s.get<std::string>());
+                }
+                if (a.contains("can")) {
+                    for (const auto& c : a["can"]) {
+                        std::string perm = c.get<std::string>();
+                        if (perm == "http") cfg.allowed_domains = {"*"};
+                        if (perm == "read") cfg.allowed_read_paths = {"/tmp", "/Users"};
+                        if (perm == "write") cfg.allowed_write_paths = {"/tmp"};
+                    }
+                }
+                configs.push_back(cfg);
+            }
+
+            auto ids = ctx_.openclaw->spawn_fleet(configs);
+
+            json resp;
+            resp["count"] = ids.size();
+            json arr = json::array();
+            for (size_t i = 0; i < ids.size(); ++i) {
+                json j;
+                j["id"] = ids[i];
+                j["name"] = configs[i].name;
+                j["success"] = !ids[i].empty();
+                arr.push_back(j);
+            }
+            resp["instances"] = arr;
+            res.status = 201;
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j;
+            j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // POST /api/openclaw/stop-all
+    svr.Post("/api/openclaw/stop-all", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ctx_.openclaw) {
+            res.status = 503;
+            res.set_content(R"({"error":"OpenClaw module not available"})", "application/json");
+            return;
+        }
+        ctx_.openclaw->stop_all();
+        res.set_content(R"({"success":true})", "application/json");
     });
 }
 

@@ -1,0 +1,65 @@
+{
+  "id": "clove",
+  "name": "CLOVE",
+  "version": "0.1.0",
+  "description": "Run OpenClaw inside CLOVE kernel sandbox — 122x faster than Docker, with cost tracking, PII filtering, audit trails, and multi-agent fleet support",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "kernelPath": {
+        "type": "string",
+        "description": "Path to clove_kernel binary. Auto-detected if omitted.",
+        "default": ""
+      },
+      "socketPath": {
+        "type": "string",
+        "description": "Unix socket path for kernel IPC",
+        "default": "/tmp/clove.sock"
+      },
+      "apiPort": {
+        "type": "number",
+        "description": "Kernel REST API port",
+        "default": 8080
+      },
+      "budgetMaxCostUsd": {
+        "type": "number",
+        "description": "Maximum LLM spend in USD (kernel-enforced kill)",
+        "default": 10.0
+      },
+      "privacyEnabled": {
+        "type": "boolean",
+        "description": "Enable PII scanning on all LLM calls",
+        "default": true
+      },
+      "privacyMode": {
+        "type": "string",
+        "enum": ["audit", "redact", "block"],
+        "description": "PII handling: audit (log only), redact (replace), block (reject)",
+        "default": "redact"
+      },
+      "sandboxMemoryMb": {
+        "type": "number",
+        "description": "Memory limit per agent in MB",
+        "default": 512
+      },
+      "sandboxCpuPercent": {
+        "type": "number",
+        "description": "CPU quota per agent as percentage",
+        "default": 50
+      },
+      "allowedDomains": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Network domains the agent can access",
+        "default": [
+          "api.openai.com", "api.anthropic.com", "openrouter.ai",
+          "generativelanguage.googleapis.com", "api.groq.com",
+          "api.telegram.org", "discord.com", "gateway.discord.gg",
+          "slack.com", "web.whatsapp.com", "signal.org",
+          "api.openclaw.ai", "clawhub.dev", "registry.npmjs.org"
+        ]
+      }
+    },
+    "additionalProperties": false
+  }
+}

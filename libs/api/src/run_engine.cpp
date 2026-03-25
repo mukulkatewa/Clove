@@ -10,6 +10,8 @@
 #include <clove/memory_block.hpp>
 #include <clove/mcp_bridge.hpp>
 #include <clove/context_assembler.hpp>
+#include <clove/permissions_store.hpp>
+#include <clove/permissions.hpp>
 #include <curl/curl.h>
 
 #include <fstream>
@@ -38,6 +40,7 @@ RunEngine::RunEngine(
     PrivacyFilter& privacy,
     AuditLogger& audit,
     StateStore& state,
+    PermissionsStore& permissions,
     ArtifactStore* artifacts,
     ChainStore* chains,
     MemoryBlockStore* memory,
@@ -49,6 +52,7 @@ RunEngine::RunEngine(
     , privacy_(privacy)
     , audit_(audit)
     , state_(state)
+    , permissions_(permissions)
     , artifacts_(artifacts)
     , chains_(chains)
     , memory_(memory)
@@ -69,6 +73,17 @@ void RunEngine::emit(EventCallback& cb, const std::string& type, const json& dat
 // ── Real tool implementations ───────────────────────────────────
 
 std::string RunEngine::tool_read_file(const std::string& path) {
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_read) {
+        audit_.log(AuditCategory::SECURITY, "READ_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] read permission denied";
+    }
+    if (!perms.can_read_path(path)) {
+        audit_.log(AuditCategory::SECURITY, "READ_PATH_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] path not allowed: " + path;
+    }
+
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         return "[error] file not found: " + path;
@@ -77,11 +92,22 @@ std::string RunEngine::tool_read_file(const std::string& path) {
     file.read(content.data(), static_cast<std::streamsize>(content.size()));
     content.resize(static_cast<size_t>(file.gcount()));
 
-    audit_.log(AuditCategory::SYSCALL, "FILE_READ", 0, "", {{"path", path}, {"bytes", content.size()}});
+    audit_.log(AuditCategory::SYSCALL, "FILE_READ", agent_id_, "", {{"path", path}, {"bytes", content.size()}});
     return content;
 }
 
 std::string RunEngine::tool_write_file(const std::string& path, const std::string& content) {
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_write) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] write permission denied";
+    }
+    if (!perms.can_write_path(path)) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_PATH_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] path not allowed: " + path;
+    }
+
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
         return "[error] cannot write: " + path;
@@ -89,15 +115,23 @@ std::string RunEngine::tool_write_file(const std::string& path, const std::strin
     file.write(content.data(), static_cast<std::streamsize>(content.size()));
     file.close();
 
-    audit_.log(AuditCategory::SYSCALL, "FILE_WRITE", 0, "", {{"path", path}, {"bytes", content.size()}});
-
-    // Also store as artifact if we have a chain
-    // (caller handles this)
+    audit_.log(AuditCategory::SYSCALL, "FILE_WRITE", agent_id_, "", {{"path", path}, {"bytes", content.size()}});
     return "wrote " + std::to_string(content.size()) + " bytes to " + path;
 }
 
 std::string RunEngine::tool_exec(const std::string& command) {
-    audit_.log(AuditCategory::SYSCALL, "EXEC_START", 0, "", {{"command", command}});
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_exec) {
+        audit_.log(AuditCategory::SECURITY, "EXEC_DENIED", agent_id_, "", {{"command", command}}, false);
+        return "[error] exec permission denied";
+    }
+    if (!perms.can_execute_command(command)) {
+        audit_.log(AuditCategory::SECURITY, "EXEC_CMD_DENIED", agent_id_, "", {{"command", command}}, false);
+        return "[error] command not allowed";
+    }
+
+    audit_.log(AuditCategory::SYSCALL, "EXEC_START", agent_id_, "", {{"command", command}});
 
     std::string cmd_redirect = command + " 2>&1";
     FILE* pipe = popen(cmd_redirect.c_str(), "r");
@@ -124,6 +158,27 @@ std::string RunEngine::tool_exec(const std::string& command) {
 }
 
 std::string RunEngine::tool_http(const std::string& url, const std::string& method, const std::string& body) {
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_http) {
+        audit_.log(AuditCategory::NETWORK, "HTTP_DENIED", agent_id_, "", {{"url", url}}, false);
+        return "[error] HTTP permission denied";
+    }
+    // Extract domain for allowlist check
+    std::string domain;
+    size_t start = url.find("://");
+    if (start != std::string::npos) start += 3; else start = 0;
+    size_t end = url.find('/', start);
+    if (end == std::string::npos) end = url.size();
+    domain = url.substr(start, end - start);
+    size_t colon = domain.find(':');
+    if (colon != std::string::npos) domain = domain.substr(0, colon);
+
+    if (!perms.can_access_domain(domain)) {
+        audit_.log(AuditCategory::NETWORK, "HTTP_DOMAIN_DENIED", agent_id_, "", {{"url", url}, {"domain", domain}}, false);
+        return "[error] domain not allowed: " + domain;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) {
         return "[error] failed to init HTTP client";
@@ -411,19 +466,38 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     RunResult result;
     result.step_log = json::array();
 
+    // Assign agent ID for permission checks (0 = API caller, no restrictions by default)
+    agent_id_ = 0;
+
     // Create chain
     std::string chain_id = cfg.chain_id;
     if (chain_id.empty() && chains_) {
-        auto chain = chains_->create(0, "run-" + cfg.agent_name, cfg.goal.substr(0, 200));
+        auto chain = chains_->create(agent_id_, "run-" + cfg.agent_name, cfg.goal.substr(0, 200));
         chain_id = chain.id;
     }
     result.chain_id = chain_id;
 
-    // Build tools
+    // Build tools (filtered by what's allowed)
     json tools_desc = build_tools(cfg.allowed_tools);
 
-    // System prompt
-    std::string system_prompt =
+    // System prompt — optionally assembled from context layer
+    std::string system_prompt;
+    if (assembler_ && !chain_id.empty()) {
+        // Use the research-backed context assembler:
+        // - SYSTEM memory blocks pinned at top
+        // - CORE memory blocks always included
+        // - Chain artifacts included
+        // - Observation masking compresses tool outputs
+        // - Position-aware: critical info at boundaries
+        AssemblyConfig ac;
+        ac.max_tokens = 128000;
+        auto assembled = assembler_->assemble(agent_id_, chain_id, ac);
+        if (!assembled.context.empty()) {
+            system_prompt = assembled.context + "\n\n---\n\n";
+        }
+    }
+
+    system_prompt +=
         "You are an AI agent named '" + cfg.agent_name + "'. "
         "Complete the user's goal using the tools available to you. "
         "Call tools when you need to interact with the real world — read files, search the web, "

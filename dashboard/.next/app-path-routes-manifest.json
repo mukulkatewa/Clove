@@ -1,0 +1,10 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/audit/page": "/audit",
+  "/fleet/page": "/fleet",
+  "/openclaw/page": "/openclaw",
+  "/page": "/",
+  "/cost/page": "/cost",
+  "/settings/page": "/settings",
+  "/runs/page": "/runs"
+}

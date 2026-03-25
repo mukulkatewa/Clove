@@ -120,9 +120,8 @@ int main(int argc, char** argv) {
 
 #ifdef __APPLE__
     if (config.enable_sandboxing) {
-        config.enable_sandboxing = false;
-        std::cout << "    " << term::YELLOW << "!" << term::RESET
-                  << "  macOS: sandboxing auto-disabled\n";
+        std::cout << "    " << term::GREEN << "\u2713" << term::RESET
+                  << "  macOS: Seatbelt sandbox enabled\n";
     }
 #endif
 

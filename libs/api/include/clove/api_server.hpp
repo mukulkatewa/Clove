@@ -28,6 +28,9 @@ class ChainStore;
 class ContextAssembler;
 class MemoryBlockStore;
 class OpenRouterClient;
+class OpenClawManager;
+class SandboxManager;
+class AgentMailboxRegistry;
 
 struct ApiContext {
     KernelConfig& config;
@@ -51,6 +54,9 @@ struct ApiContext {
     ContextAssembler* assembler;      // nullable
     MemoryBlockStore* memory_blocks;  // nullable
     OpenRouterClient* openrouter;     // nullable
+    OpenClawManager* openclaw;       // nullable
+    SandboxManager* sandbox_manager; // nullable
+    AgentMailboxRegistry* mailbox;   // nullable
 };
 
 class ApiServer {

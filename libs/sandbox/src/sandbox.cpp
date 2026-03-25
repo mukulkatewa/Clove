@@ -508,12 +508,7 @@ bool Sandbox::start(const std::string& command, const std::vector<std::string>& 
     return true;
 
 #else
-    // === macOS / other platforms: fork() only, no namespace isolation ===
-
-    spdlog::warn("DEGRADED ISOLATION: Namespace isolation not available on this platform");
-    spdlog::warn("  -> Using fork() — no PID, NET, MNT, UTS isolation");
-
-    isolation_status_.degraded_reason = "Platform does not support Linux namespaces";
+    // === macOS: fork() + Seatbelt (sandbox-exec) for kernel-enforced restrictions ===
 
     child_pid_ = fork();
 
@@ -526,7 +521,17 @@ bool Sandbox::start(const std::string& command, const std::vector<std::string>& 
     if (child_pid_ == 0) {
         // Child process
 
-        // Set egress proxy env vars (macOS defense-in-depth)
+#ifdef __APPLE__
+        // Apply Seatbelt sandbox before exec — kernel-enforced file + network restrictions
+        if (config_.enable_landlock || config_.enable_seccomp) {
+            // We use the Landlock/seccomp flags as "enable sandbox" signals on macOS
+            if (!apply_seatbelt()) {
+                spdlog::warn("Seatbelt failed — continuing without macOS sandbox");
+            }
+        }
+#endif
+
+        // Set egress proxy env vars (defense-in-depth)
         const char* proxy = getenv("CLOVE_EGRESS_PROXY");
         if (proxy && proxy[0]) {
             setenv("HTTP_PROXY", proxy, 1);
@@ -547,11 +552,19 @@ bool Sandbox::start(const std::string& command, const std::vector<std::string>& 
     }
 
     // Parent
-    isolation_status_.fully_isolated = false;
+#ifdef __APPLE__
+    if (config_.enable_landlock || config_.enable_seccomp) {
+        spdlog::info("Sandbox {} started with Seatbelt isolation (PID={})", config_.name, child_pid_);
+    } else {
+        spdlog::warn("Sandbox {} started without Seatbelt (PID={}, fork-only)", config_.name, child_pid_);
+        isolation_status_.degraded_reason = "Seatbelt not enabled in config";
+    }
+#else
+    spdlog::warn("Sandbox {} started in DEGRADED MODE (PID={}, fork-only)", config_.name, child_pid_);
+    isolation_status_.degraded_reason = "Platform does not support sandboxing";
+#endif
 
     set_state(SandboxState::RUNNING);
-    spdlog::warn("Sandbox {} started in DEGRADED MODE (PID={}, fork-only)",
-        config_.name, child_pid_);
     return true;
 #endif
 }

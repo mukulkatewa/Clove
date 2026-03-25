@@ -20,6 +20,7 @@ class ChainStore;
 class MemoryBlockStore;
 class McpBridge;
 class ContextAssembler;
+class PermissionsStore;
 
 /// Event emitted during a run — streamed to SSE or collected for sync response.
 struct RunEvent {
@@ -63,6 +64,7 @@ public:
         PrivacyFilter& privacy,
         AuditLogger& audit,
         StateStore& state,
+        PermissionsStore& permissions,
         ArtifactStore* artifacts,        // nullable
         ChainStore* chains,              // nullable
         MemoryBlockStore* memory,        // nullable
@@ -84,6 +86,7 @@ private:
     PrivacyFilter& privacy_;
     AuditLogger& audit_;
     StateStore& state_;
+    PermissionsStore& permissions_;
     ArtifactStore* artifacts_;
     ChainStore* chains_;
     MemoryBlockStore* memory_;
@@ -91,6 +94,7 @@ private:
     ContextAssembler* assembler_;
     const KernelConfig& config_;
     std::atomic<bool> cancelled_{false};
+    uint32_t agent_id_ = 0;  // set per-run for permission checks
 
     nlohmann::json build_tools(const std::vector<std::string>& allowed);
     std::string execute_tool(const std::string& name, const nlohmann::json& args,

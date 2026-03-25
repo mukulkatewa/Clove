@@ -7,6 +7,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/linux/landlock.cpp
         src/linux/seccomp.cpp
     )
+elseif(APPLE)
+    target_sources(clove_sandbox PRIVATE
+        src/macos/sandbox_exec.cpp
+    )
 endif()
 
 target_include_directories(clove_sandbox PUBLIC include)

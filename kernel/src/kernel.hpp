@@ -43,6 +43,8 @@ class MemoryBlockStore;
 class MemoryBlockDb;
 class AgentScheduler;
 class OpenRouterClient;
+class SandboxManager;
+class OpenClawManager;
 struct KernelContext;
 struct Manifest;
 
@@ -101,6 +103,8 @@ private:
     std::unique_ptr<MemoryBlockDb> memory_block_db_;
     std::unique_ptr<AgentScheduler> scheduler_;
     std::shared_ptr<OpenRouterClient> openrouter_;
+    std::unique_ptr<SandboxManager> sandbox_manager_;
+    std::unique_ptr<OpenClawManager> openclaw_manager_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

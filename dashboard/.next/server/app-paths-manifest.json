@@ -1,0 +1,10 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/audit/page": "app/audit/page.js",
+  "/fleet/page": "app/fleet/page.js",
+  "/openclaw/page": "app/openclaw/page.js",
+  "/page": "app/page.js",
+  "/cost/page": "app/cost/page.js",
+  "/settings/page": "app/settings/page.js",
+  "/runs/page": "app/runs/page.js"
+}

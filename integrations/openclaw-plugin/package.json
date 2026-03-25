@@ -1,0 +1,23 @@
+{
+  "name": "@clove/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "CLOVE kernel sandbox for OpenClaw — 122x faster than Docker, with budgets, PII, audit, and fleet",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "files": ["dist", "openclaw.plugin.json"],
+  "keywords": ["openclaw", "clove", "sandbox", "agent", "kernel"],
+  "license": "MIT",
+  "dependencies": {
+    "@clove/sdk": "file:../../sdk/typescript"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0",
+    "commander": "^13.0.0"
+  }
+}
