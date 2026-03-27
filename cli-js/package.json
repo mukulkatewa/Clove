@@ -1,0 +1,20 @@
+{
+  "name": "@clove/cli",
+  "version": "0.1.0",
+  "description": "CLOVE — Run, govern, and scale AI agent fleets from your terminal",
+  "type": "module",
+  "bin": {
+    "clove": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "files": ["dist"],
+  "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}
