@@ -27,5 +27,6 @@ dist/
 integrations/*/dist/
 integrations/*/node_modules/
 node_modules/
+openclaw-provider/
 package-lock.json
 report.md

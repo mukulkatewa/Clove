@@ -1,136 +1,228 @@
 # CLOVE — Setup Guide
 
-> Everything you need to get CLOVE running on your machine and start building with it.
+> From zero to running agents in 3 commands.
 
 ---
 
-## macOS Setup (5 minutes)
-
-### 1. Prerequisites
+## Option A: npm install (recommended)
 
 ```bash
-# Xcode command line tools
-xcode-select --install
+# 1. Install (builds kernel automatically)
+npm install -g @clove/cli
 
-# Dependencies
-brew install cmake openssl curl sqlite3 node
+# 2. Set your LLM key (free tier at https://openrouter.ai/keys)
+clove config set openrouterKey sk-or-v1-your-key-here
+
+# 3. Start
+clove start
 ```
 
-### 2. Clone and build
+Done. Kernel running. Dashboard open. Run agents:
 
 ```bash
+clove run "Research the top 5 AI companies in 2026"
+clove fleet "Compare Rust, Go, and Python" -n 3
+clove status
+clove recall
+clove stop
+```
+
+### Prerequisites for npm install
+
+The postinstall script builds the kernel from C++ source. You need:
+
+**macOS:**
+```bash
+xcode-select --install
+brew install cmake openssl curl sqlite3
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev libsqlite3-dev
+```
+
+If the build fails, run `clove build` to retry.
+
+---
+
+## Option B: Build from source
+
+```bash
+# Clone
 git clone https://github.com/aniiiiXD/Clove.git
 cd Clove
 git checkout v2
 
+# Build
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j$(sysctl -n hw.ncpu)
+cmake --build . -j$(sysctl -n hw.ncpu)    # macOS
+# cmake --build . -j$(nproc)              # Linux
 cd ..
-```
 
-Build produces: `build/kernel/clove_kernel`
+# Install CLI
+cd cli-js && npm install && npm link && cd ..
 
-### 3. Get an LLM API key
+# Set LLM key
+clove config set openrouterKey sk-or-v1-your-key-here
 
-Get a free key from [OpenRouter](https://openrouter.ai/keys) (gives access to 300+ models).
-
-```bash
-export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
-```
-
-Or create a `.env` file in the repo root:
-```
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-```
-
-### 4. Start the kernel
-
-```bash
-./build/kernel/clove_kernel --sandbox --privacy --api
-```
-
-You should see:
-```
-✓  macOS: Seatbelt sandbox enabled
-✓  Starting CLOVE v2.0.0
-[info] API server listening on port 8080
-
-═══════════════════════════════════════
-  CLOVE READY  ·  Ctrl+C to shutdown
-═══════════════════════════════════════
-```
-
-### 5. Verify it works
-
-```bash
-# Health check
-curl localhost:8080/api/health
-
-# Run an agent
-curl -X POST localhost:8080/api/run \
-  -H "Content-Type: application/json" \
-  -d '{"goal": "What is 2+2? Answer with just the number.", "budget": 0.05}'
-
-# Check cost
-curl localhost:8080/api/cost
+# Start
+clove start
 ```
 
 ---
 
-## Dashboard Setup
+## CLI Reference
 
-### Built-in dashboard (no setup needed)
+```
+clove start                    Start kernel + open dashboard
+clove stop                     Stop kernel
+clove status                   Health, agents, cost, memory
+clove run "goal"               Run an agent
+clove run "goal" --budget 1.0  Run with specific budget
+clove fleet "goal" -n 5        Run 5 agents in parallel
+clove recall                   Show shared memory blocks
+clove logs                     Recent audit entries
+clove logs 50                  Last 50 audit entries
+clove dashboard                Open dashboard in browser
+clove build                    Rebuild kernel from source
+clove config                   Show all config
+clove config set key value     Set a config value
+clove config get key           Get a config value
+```
 
-Open `http://localhost:8080/dashboard` — HTMX dashboard, works immediately.
+Shortcuts: `s` = status, `r` = run, `f` = fleet, `d` = dashboard, `c` = config
 
-### React dashboard (full UI)
+---
 
+## Config
+
+Config stored at `~/.clove/config.json`. Set via CLI or edit directly.
+
+| Key | Default | What |
+|-----|---------|------|
+| `openrouterKey` | (required) | LLM API key from openrouter.ai |
+| `apiPort` | 8080 | Kernel REST API port |
+| `privacy` | true | Enable PII filtering |
+| `privacyMode` | redact | PII mode: audit, redact, block |
+| `sandbox` | true | Enable Seatbelt sandbox (macOS) |
+| `kernelPath` | (auto-detect) | Path to kernel binary |
+
+```bash
+# Examples
+clove config set openrouterKey sk-or-v1-abc123
+clove config set apiPort 9090
+clove config set privacy true
+clove config set privacyMode block
+```
+
+---
+
+## API Endpoints (quick reference)
+
+Once the kernel is running (`clove start`), these endpoints are available:
+
+### Run agents
+```bash
+# Single agent
+curl -X POST localhost:8080/api/run -H "Content-Type: application/json" \
+  -d '{"goal": "Your goal here", "budget": 0.50}'
+
+# Fleet (parallel)
+curl -N -X POST localhost:8080/api/fleet -H "Content-Type: application/json" \
+  -d '{"goal": "Your goal", "agents": 3, "budget": 1.00}'
+
+# OpenAI-compatible (works with any tool that speaks OpenAI format)
+curl -X POST localhost:8080/api/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model": "anthropic/claude-sonnet-4", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### Memory
+```bash
+# List all memory blocks
+curl localhost:8080/api/memory
+
+# Search memory (relevance-scored)
+curl "localhost:8080/api/memory/search?q=your+query"
+
+# Create memory block
+curl -X POST localhost:8080/api/memory -H "Content-Type: application/json" \
+  -d '{"name": "my-findings", "content": "Important fact", "type": "core", "access": "shared_read"}'
+```
+
+### Monitoring
+```bash
+curl localhost:8080/api/health           # Kernel status
+curl localhost:8080/api/cost             # Total LLM spend
+curl localhost:8080/api/audit?limit=20   # Audit log
+curl localhost:8080/api/history          # Run history
+curl localhost:8080/api/sandbox/overview  # All agents + permissions
+```
+
+### Governance
+```bash
+# Get agent permissions
+curl localhost:8080/api/agents/0/permissions
+
+# Set permissions
+curl -X PUT localhost:8080/api/agents/0/permissions -H "Content-Type: application/json" \
+  -d '{"permissions": {"can_exec": true, "can_http": true, "allowed_domains": ["*"]}}'
+
+# Schedule a recurring run
+curl -X POST localhost:8080/api/schedules -H "Content-Type: application/json" \
+  -d '{"name": "daily-report", "cron": "0 9 * * *", "run": {"goal": "Write a daily summary", "budget": 0.50}}'
+
+# Set up webhook notifications
+curl -X POST localhost:8080/api/webhooks -H "Content-Type: application/json" \
+  -d '{"url": "https://hooks.slack.com/your/hook", "events": ["run_complete", "budget_exceeded"]}'
+```
+
+Full API spec: [docs/API_SPEC.md](docs/API_SPEC.md)
+
+---
+
+## Dashboard
+
+### Built-in (no setup)
+```bash
+clove start
+open http://localhost:8080/dashboard
+```
+
+### React dashboard (full UI, 8 pages)
 ```bash
 cd dashboard
 npm install
 npm run dev
+open http://localhost:3000
 ```
 
-Open `http://localhost:3000`
+Pages: Overview, Sandbox Visualizer, Runs, Fleet, OpenClaw, Audit, Cost, Settings
 
-Pages: Overview, Sandbox Visualizer, Runs, Fleet, OpenClaw, Audit, Cost, Settings.
-
-**Important:** The React dashboard proxies API calls to `localhost:8080` via Next.js rewrites. Only works in dev mode (`npm run dev`), not production build.
+**Note:** React dashboard uses Next.js proxy — must run in dev mode (`npm run dev`).
 
 ---
 
-## OpenClaw Integration (optional)
+## OpenClaw Integration
 
-For agents that need chat platforms (Telegram, Slack, WhatsApp).
+Connect agents to Telegram, Slack, WhatsApp, Discord via OpenClaw.
 
-### 1. Install OpenClaw
+### Setup
 
 ```bash
+# Install OpenClaw
 npm install -g @openclaw/cli
-# or use a local copy:
-# npx @openclaw/cli --version
-```
 
-### 2. Install the CLOVE plugin
-
-```bash
-# Copy plugin to OpenClaw extensions
+# Install CLOVE plugin
 mkdir -p ~/.openclaw/extensions/clove
-cp integrations/openclaw-plugin/dist/* ~/.openclaw/extensions/clove/
-cp integrations/openclaw-plugin/openclaw.plugin.json ~/.openclaw/extensions/clove/
-cp integrations/openclaw-plugin/package.json ~/.openclaw/extensions/clove/
-```
-
-Or build from source:
-```bash
 cd integrations/openclaw-plugin
-npm install
-npx tsc
-# Then copy dist/ to ~/.openclaw/extensions/clove/
+npm install && npx tsc
+cp dist/* ~/.openclaw/extensions/clove/
+cp openclaw.plugin.json package.json ~/.openclaw/extensions/clove/
 ```
 
-### 3. Configure OpenClaw
+### Configure
 
 Create `~/.openclaw/openclaw.json`:
 ```json
@@ -141,270 +233,186 @@ Create `~/.openclaw/openclaw.json`:
         "baseUrl": "http://localhost:8080/api/v1",
         "apiKey": "clove-internal",
         "api": "openai-completions",
-        "models": [
-          {
-            "id": "google/gemini-2.0-flash-001",
-            "name": "Gemini Flash (via CLOVE)",
-            "reasoning": false,
-            "input": ["text"],
-            "cost": { "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0 },
-            "contextWindow": 1000000,
-            "maxTokens": 8192
-          }
-        ]
+        "models": [{
+          "id": "google/gemini-2.0-flash-001",
+          "name": "Gemini Flash (via CLOVE)",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+          "contextWindow": 1000000,
+          "maxTokens": 8192
+        }]
       }
     }
   },
-  "gateway": {
-    "port": 18789,
-    "mode": "local"
-  }
+  "gateway": {"port": 18789, "mode": "local"}
 }
 ```
 
-For Telegram, add:
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "botToken": "YOUR_BOT_TOKEN",
-      "groupPolicy": "open"
-    }
-  }
-}
-```
+For Telegram, add a `channels` section with your bot token (get from @BotFather).
 
-### 4. Start OpenClaw
+### Run
 
 ```bash
-# Make sure CLOVE kernel is running first
+# Start CLOVE first
+clove start
+
+# Start OpenClaw
 openclaw gateway
+
+# Open OpenClaw dashboard
+openclaw dashboard
 ```
 
-### 5. Verify shared memory works
+### Shared memory
+
+RunEngine agents and OpenClaw agents share memory through the kernel:
 
 ```bash
 # Agent stores findings
-curl -X POST localhost:8080/api/run -d '{
-  "goal": "Search for what Rust is used for and store findings in memory",
-  "tools": ["search", "remember"], "agent_name": "researcher"
-}'
+clove run "Research Rust and store findings in memory" --budget 0.30
 
-# OpenClaw bot recalls them (via dashboard at localhost:18789)
+# OpenClaw bot recalls them (via dashboard or Telegram)
 # Ask: "What do you know about Rust?"
 ```
 
 ---
 
-## MCP Server (optional)
+## MCP Server
 
-Exposes CLOVE memory/artifacts to any MCP client (Claude Code, Cursor, etc).
+Expose CLOVE memory and tools to any MCP client (Claude Code, Cursor, etc).
 
 ```bash
 cd integrations/mcp-server
-npm install
-npx tsc
+npm install && npx tsc
 ```
 
-### Claude Code integration
-
+### Claude Code
 Add to `~/.claude/settings.json`:
 ```json
 {
   "mcpServers": {
     "clove": {
       "command": "node",
-      "args": ["/path/to/clove-v2/integrations/mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/clove-v2/integrations/mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-### Available MCP tools
-
-| Tool | What it does |
-|---|---|
-| `remember` | Store fact in shared kernel memory |
-| `recall` | Retrieve facts from shared memory |
-| `share` | Share memory block with another agent |
-| `artifact` | Create typed artifact (research, report, plan) |
-| `agents` | List running agents |
-| `cost` | Check LLM cost tracking |
-| `search` | Web search through kernel |
-| `run` | Delegate task to RunEngine agent |
+Tools available: `remember`, `recall`, `share`, `artifact`, `agents`, `cost`, `search`, `run`
 
 ---
 
-## Common tasks
+## Agent Tools
 
-### Run a research agent
-```bash
-curl -X POST localhost:8080/api/run -d '{
-  "goal": "Research the top 5 AI agent frameworks in 2026 and compare their features",
-  "budget": 0.50,
-  "tools": ["search", "remember", "recall", "write_file"]
-}'
-```
-
-### Run a fleet
-```bash
-curl -N -X POST localhost:8080/api/fleet -d '{
-  "goal": "Research 3 different programming languages",
-  "agents": 3,
-  "budget": 1.00
-}'
-```
-
-### Create a scheduled run
-```bash
-curl -X POST localhost:8080/api/schedules -d '{
-  "name": "daily-report",
-  "cron": "0 9 * * *",
-  "run": {"goal": "Research latest AI news and write a summary", "budget": 0.50}
-}'
-```
-
-### Set up a webhook
-```bash
-curl -X POST localhost:8080/api/webhooks -d '{
-  "url": "https://hooks.slack.com/services/YOUR/HOOK",
-  "events": ["run_complete", "budget_exceeded"]
-}'
-```
-
-### Spawn OpenClaw via API
-```bash
-curl -X POST localhost:8080/api/openclaw/spawn -d '{
-  "name": "support-bot",
-  "soul": "You triage support tickets and draft replies.",
-  "budget_usd": 10.00,
-  "channels": ["telegram"]
-}'
-```
-
-### Check everything
-```bash
-curl localhost:8080/api/health          # Kernel status
-curl localhost:8080/api/cost            # Total LLM spend
-curl localhost:8080/api/audit?limit=20  # Recent actions
-curl localhost:8080/api/memory          # Shared memory blocks
-curl localhost:8080/api/history         # Run history
-curl localhost:8080/api/openclaw/status # OpenClaw instances
-curl localhost:8080/api/sandbox/overview # Full agent state
-```
+| Tool | What | Permission |
+|------|------|------------|
+| `read_file` | Read files | `can_read` + path ACL |
+| `write_file` | Write files | `can_write` + path ACL |
+| `exec` | Shell commands | `can_exec` + command blocklist |
+| `http` | HTTP requests | `can_http` + domain allowlist |
+| `search` | Web search (DuckDuckGo + LLM) | always allowed |
+| `store` / `fetch` | Key-value store | always allowed |
+| `remember` / `recall` | Persistent shared memory | always allowed |
+| `delegate` | Spawn sub-agent | budget inherited, depth max 3 |
+| `mcp_*` | Any MCP tool | requires `--mcp` flag |
 
 ---
 
-## CLI flags reference
+## Intelligence Features
+
+Built into the RunEngine, active by default:
+
+| Feature | What | Research basis |
+|---------|------|---------------|
+| Plan-then-execute | Agent writes plan before acting | Wang et al. 2023 |
+| Observation masking | Old tool outputs compressed | JetBrains NeurIPS 2025 |
+| Reflexion | Retry with self-reflection on failure | Shinn et al. 2023 |
+| Context positioning | Critical info at prompt boundaries | Liu/Stanford 2023 |
+| Relevance scoring | Memory search by keywords + recency + type | Park/Stanford 2023 |
+
+---
+
+## Kernel Flags
 
 ```
 ./clove_kernel [OPTIONS]
 
-Core:
-  --socket <path>         Unix socket (default: /tmp/clove.sock)
-  --sandbox               Enable sandbox (Seatbelt on macOS, namespaces on Linux)
-  --db <path>             SQLite database (default: clove.db)
-
-LLM:
-  --openrouter            Enable OpenRouter
-  --openrouter-key <key>  API key (or OPENROUTER_API_KEY env var)
-  --llm-model <model>     Default model (default: google/gemini-2.0-flash-001)
-  --llm-max-cost <usd>    System-wide cost cap
-
-API:
-  --api                   Enable REST API + dashboard
-  --api-port <port>       Port (default: 8080)
-  --api-key <key>         Auth key (or CLOVE_API_KEY env var)
-
-Privacy:
-  --privacy               Enable PII filter
-  --privacy-mode <mode>   audit | redact | block
-
-Integrations:
-  --mcp                   Enable MCP bridge
-  --a2a                   Enable A2A bridge
+--socket <path>         Unix socket (default: /tmp/clove.sock)
+--sandbox               Enable sandbox (Seatbelt macOS, namespaces Linux)
+--db <path>             SQLite database (default: clove.db)
+--api                   Enable REST API + dashboard
+--api-port <port>       API port (default: 8080)
+--api-key <key>         API auth key
+--openrouter            Enable LLM via OpenRouter
+--openrouter-key <key>  API key
+--llm-model <model>     Default model
+--llm-max-cost <usd>    System-wide cost cap
+--privacy               Enable PII filter
+--privacy-mode <mode>   audit | redact | block
+--mcp                   Enable MCP bridge
+--a2a                   Enable A2A bridge
 ```
+
+Env vars: `OPENROUTER_API_KEY`, `CLOVE_API_KEY` (also reads `.env` file).
 
 ---
 
-## Project structure (for contributors)
+## Project Structure
 
 ```
-kernel/src/              Kernel binary — main.cpp, kernel.cpp, 22 syscall modules
-libs/
-  api/                   REST API (71 endpoints) + RunEngine (11 tools)
-  governance/            Permissions, audit, PII, budget enforcement
-  sandbox/               Seatbelt (macOS), namespaces+Landlock+seccomp (Linux)
-  integrations/          OpenRouter, MCP bridge, A2A bridge, tunnel bridge
-  orchestration/         Scheduler, event bus, mailbox/IPC, state store
-  context/               Memory blocks, artifacts, chains, context assembler
-  persistence/           SQLite persistence (state, artifacts, memory, audit)
-  core/                  Protocol (86 opcodes), config, types
-  agents/                Agent process manager
-  ipc/                   Unix socket server/client
-  reactor/               Event loop (kqueue/epoll)
-  worlds/                World engine (tenant isolation)
-
-integrations/
-  openclaw-plugin/       OpenClaw plugin (TypeScript) — tools + prompt injection
-  mcp-server/            MCP server (TypeScript) — 8 tools, 2 resource types
-
-dashboard/               React dashboard (Next.js) — 8 pages
-sdk/python/              Python SDK — 86 methods
-benchmarks/              CLOVE vs OpenShell benchmarks
-tests/                   165 tests (Catch2)
-docs/                    Architecture, API spec, roadmap
-```
-
----
-
-## Tests
-
-```bash
-cd build
-ctest --output-on-failure
-# 165/165 tests passing
+clove-v2/
+  kernel/src/              Kernel (4,457 LOC C++)
+  libs/
+    api/                   REST API + RunEngine (4,715 LOC)
+    governance/            Permissions, audit, PII (2,169 LOC)
+    sandbox/               Seatbelt/namespaces (1,467 LOC)
+    integrations/          OpenRouter, MCP, A2A (1,462 LOC)
+    orchestration/         Scheduler, events, IPC (1,280 LOC)
+    context/               Memory, artifacts, assembler (1,007 LOC)
+    persistence/           SQLite (932 LOC)
+    core/                  Protocol, config (698 LOC)
+    + agents, ipc, reactor, worlds
+  cli-js/                  CLI (@clove/cli)
+  integrations/
+    openclaw-plugin/       OpenClaw plugin (953 LOC TS)
+    mcp-server/            MCP server (359 LOC TS)
+  dashboard/               React dashboard (1,480 LOC, 8 pages)
+  sdk/python/              Python SDK (878 LOC)
+  benchmarks/              CLOVE vs OpenShell
+  tests/                   165 tests (Catch2)
+  docs/                    Architecture, API spec, roadmap
 ```
 
 ---
 
 ## Troubleshooting
 
-**Kernel won't start:**
-- Check if port 8080 is in use: `lsof -i :8080`
-- Use a different port: `--api-port 9090`
-- Check OpenRouter key: `echo $OPENROUTER_API_KEY`
-
-**Build fails:**
-- Make sure Xcode CLT is installed: `xcode-select --install`
-- Make sure cmake is recent: `cmake --version` (need 3.20+)
-- Clean build: `rm -rf build && mkdir build && cd build && cmake ..`
-
-**Dashboard won't connect:**
-- React dashboard must run in dev mode: `npm run dev` (not `npm start`)
-- Check kernel is on port 8080: `curl localhost:8080/api/health`
-
-**OpenClaw won't start:**
-- Check if port 18789 is free: `lsof -i :18789`
-- Kill stale processes: `pkill -f openclaw`
-- Re-run: `openclaw gateway`
-
-**OpenClaw says "unauthorized":**
-- Get token: `openclaw dashboard`
-- Open the URL with `#token=...` in browser
-
-**Telegram bot not responding:**
-- Approve pairing: `openclaw pairing approve telegram <code>`
-- Check bot token: `curl https://api.telegram.org/bot<TOKEN>/getMe`
+| Problem | Fix |
+|---------|-----|
+| `clove start` says "No LLM API key" | `clove config set openrouterKey sk-or-v1-...` |
+| `clove start` says "Kernel not found" | `clove build` or set `clove config set kernelPath /path/to/binary` |
+| Port 8080 in use | `clove config set apiPort 9090` |
+| Build fails on macOS | `xcode-select --install && brew install cmake openssl curl sqlite3` |
+| Build fails on Linux | `sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev libsqlite3-dev` |
+| Dashboard shows "Offline" | Wait 5 seconds (client-side fetch), or check `curl localhost:8080/api/health` |
+| React dashboard CORS error | Use `npm run dev` (not `npm start`) — dev mode has API proxy |
+| OpenClaw "unauthorized" | Run `openclaw dashboard` to get the token URL |
+| OpenClaw Telegram "pairing" | Approve with `openclaw pairing approve telegram <code>` |
 
 ---
 
-## Environment variables
+## Numbers
 
-| Variable | What | Default |
-|---|---|---|
-| `OPENROUTER_API_KEY` | LLM API key | required |
-| `CLOVE_API_KEY` | REST API auth key | none (no auth) |
-| `CLOVE_KERNEL_PATH` | Path to kernel binary | auto-detect |
-| `OPENCLAW_PATH` | Path to OpenClaw binary | auto-detect |
+| Metric | Value |
+|--------|-------|
+| Kernel LOC | 19,737 C++ |
+| Total LOC | ~26,000 |
+| Syscalls | 86 |
+| API endpoints | 71 |
+| Tests | 165 (all passing) |
+| Startup | 52ms |
+| Base RAM | 12.9 MB |
+| Per-agent RAM | ~3 MB |
+| LLM proxy overhead | 10ms |

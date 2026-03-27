@@ -8,34 +8,43 @@
 
 ---
 
-## Try it (macOS, 2 minutes)
+## Install
 
 ```bash
-# Prerequisites
+# Prerequisites (macOS)
 xcode-select --install
 brew install cmake openssl curl sqlite3
 
-# Build
-git clone https://github.com/aniiiiXD/Clove.git
-cd Clove && git checkout v2
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j$(sysctl -n hw.ncpu)
-cd ..
+# Install (builds kernel automatically)
+npm install -g @clove/cli
 
-# Get an API key (free tier works)
-export OPENROUTER_API_KEY="sk-or-v1-your-key"
+# Set your LLM key (free at https://openrouter.ai/keys)
+clove config set openrouterKey sk-or-v1-your-key
 
-# Start the kernel
-./build/kernel/clove_kernel --sandbox --privacy --api
-
-# In another terminal — run an agent
-curl -X POST localhost:8080/api/run \
-  -H "Content-Type: application/json" \
-  -d '{"goal": "What are the top 3 AI companies in 2026?", "budget": 0.50}'
+# Start
+clove start
 ```
 
-The agent plans, searches the web, and returns a result. Cost tracked. PII filtered. Audited.
+That's it. Kernel running. Dashboard open at `http://localhost:8080/dashboard`.
+
+```bash
+# Run an agent
+clove run "What are the top 3 AI companies in 2026?"
+
+# Run a fleet (3 agents in parallel)
+clove fleet "Compare Rust, Go, and Python" -n 3
+
+# Check status
+clove status
+
+# Show shared memory
+clove recall
+
+# Stop
+clove stop
+```
+
+> Full setup guide: [SETUP.md](SETUP.md) — covers npm install, building from source, OpenClaw integration, MCP server, dashboard, troubleshooting.
 
 ---
 
