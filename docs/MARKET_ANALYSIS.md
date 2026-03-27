@@ -15,10 +15,10 @@ A C++23 microkernel runtime that runs AI agent processes with:
 - Multi-agent orchestration (state store, event bus, mailboxes, 0.02ms IPC)
 - 300+ LLM models via OpenRouter (7 providers auto-detected)
 - PII filtering, cost controls, audit logging, execution replay
-- REST API (46 endpoints), CLI, Python SDK, TypeScript SDK, HTMX dashboard
+- REST API (71 endpoints), CLI, Python SDK, TypeScript SDK, HTMX dashboard
 - Built-in agent runner with tool-calling loop (POST /api/run)
 - Parallel fleet execution with SSE streaming (POST /api/fleet)
-- 165 tests, ~16.8K LOC C++
+- 165 tests, ~19.7K LOC C++
 
 **In plain language:** An operating system for AI agents. Agents run as processes, the kernel manages them.
 
@@ -273,7 +273,7 @@ Docker could add agent sandboxing profiles, cost controls, audit logging. K8s co
 ## Part 7: What We Know vs What We Don't
 
 ### What we KNOW:
-- The technology works (16.8K LOC, 165 tests, 46 API endpoints, benchmarks verified)
+- The technology works (19.7K LOC, 165 tests, 46 API endpoints, benchmarks verified)
 - Agent security is a real problem (documented incidents, regulatory mandates)
 - OpenShell is technically inferior (benchmarks prove it)
 - Execution replay is unique and nobody else has it

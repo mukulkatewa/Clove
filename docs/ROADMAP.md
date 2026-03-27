@@ -71,7 +71,7 @@
 ### Infrastructure
 | Feature | Notes |
 |---------|-------|
-| REST API | 46 HTTP routes, Bearer auth, HTMX dashboard |
+| REST API | 71 HTTP routes, Bearer auth, HTMX dashboard |
 | RunEngine | Built-in agent with tool-calling loop — `POST /api/run` |
 | SSE Streaming | Real-time event streaming — `POST /api/run/stream` |
 | Fleet | Parallel multi-agent execution — `POST /api/fleet` |

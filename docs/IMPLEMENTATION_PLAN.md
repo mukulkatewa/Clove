@@ -44,7 +44,7 @@ The manager doesn't choose between these. They say: "I need an agent that reads 
 |------|--------|
 | Kernel compiles, all 86 syscalls, 165 tests passing | Done |
 | RunEngine with 10 real tools (file, exec, HTTP, search, MCP, memory) | Done |
-| 51 REST API endpoints (think, run, stream, fleet, history, audit, cost, memory) | Done |
+| 71 REST API endpoints (think, run, stream, fleet, history, audit, cost, memory) | Done |
 | Permission checks on all RunEngine tools (read/write/exec/http) | Done |
 | Context assembly wired into RunEngine | Done |
 | PII filtering on every LLM call | Done |
@@ -343,7 +343,7 @@ IT deploys CLOVE on-prem. 50 agents, 8 departments. Full audit trail for EU AI A
 
 ## What makes this defensible
 
-1. **The kernel.** 16,800 LOC C++, 86 syscalls, 165 tests. Can't replicate in Python.
+1. **The kernel.** 19,737 LOC C++, 86 syscalls, 165 tests. Can't replicate in Python.
 2. **Module architecture.** OpenClaw is one module. Tomorrow it's MCP, A2A, LangChain, CrewAI. The kernel runs them all.
 3. **Governance at kernel level.** Budgets, PII, audit, replay — not app-level middleware, kernel-level enforcement. Can't bypass it.
 4. **Performance moat.** 3MB/agent, 27ms startup. Physics, not software.

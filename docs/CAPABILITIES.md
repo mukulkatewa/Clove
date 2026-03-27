@@ -2,11 +2,11 @@
 
 **Version:** 2.0.0
 **Language:** C++23
-**Codebase:** 16,800+ LOC (119 source files) + 878 LOC Python SDK + 1,305 LOC TypeScript SDK
+**Codebase:** 19,737+ LOC (119 source files) + 878 LOC Python SDK + 1,305 LOC TypeScript SDK
 **Libraries:** 14 modular static libraries + 2 binaries (kernel, CLI)
 **Syscalls:** 86 opcodes over binary IPC protocol
 **Tests:** 165 (Catch2)
-**REST API:** 46 endpoints including agent runner, fleet, SSE streaming
+**REST API:** 71 endpoints including agent runner, fleet, SSE streaming
 
 ---
 
