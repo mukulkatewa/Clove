@@ -41,6 +41,17 @@ public:
     // Get all SYSTEM+CORE blocks for an agent (for context assembly).
     std::vector<MemoryBlock> get_assembly_blocks(uint32_t agent_id) const;
 
+    // Search blocks by relevance to a query.
+    // Scores on: keyword overlap (TF-IDF style), recency (exponential decay),
+    // and type priority (SYSTEM > CORE > RECALL).
+    // Returns top-K results sorted by score descending.
+    struct ScoredBlock {
+        MemoryBlock block;
+        double score = 0.0;
+    };
+    std::vector<ScoredBlock> search(const std::string& query, uint32_t agent_id,
+                                     size_t top_k = 5) const;
+
     // Insert a pre-built block (for persistence loading).
     void insert(const MemoryBlock& block);
 

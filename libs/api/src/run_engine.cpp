@@ -303,15 +303,28 @@ std::string RunEngine::tool_recall(const std::string& query) {
         }
         return results.empty() ? "(no memories found)" : results;
     }
-    // Read from memory block
-    auto blocks = memory_->list(0, 100);
-    for (const auto& b : blocks) {
-        if (b.name == "agent-memory") {
-            auto opt = memory_->get(b.id, 0);
-            if (opt) return opt->content;
+
+    // Use relevance-scored search (keyword overlap + recency + type priority)
+    auto scored = memory_->search(query, agent_id_, 10);
+    if (scored.empty()) {
+        // Fallback: return all blocks if search returns nothing
+        auto all = memory_->list(agent_id_, 100);
+        if (all.empty()) return "(no memories found)";
+        std::string result;
+        for (const auto& b : all) {
+            result += "[" + std::string(memory_block_type_to_string(b.type)) + "] " +
+                      b.name + ":\n" + b.content + "\n\n";
         }
+        return result;
     }
-    return "(no memories found)";
+
+    std::string result;
+    for (const auto& sb : scored) {
+        result += "[" + std::string(memory_block_type_to_string(sb.block.type)) +
+                  " | score:" + std::to_string(static_cast<int>(sb.score * 100)) + "%] " +
+                  sb.block.name + ":\n" + sb.block.content + "\n\n";
+    }
+    return result;
 }
 
 // ── Tool dispatch ───────────────────────────────────────────────
@@ -384,6 +397,20 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
             {"query", {{"type", "string"}, {"description", "What to recall"}}}
         }}, {"required", json::array({"query"})}});
 
+    // ── Delegate tool (spawn sub-agent) ──
+    add("delegate",
+        "Delegate a sub-task to a new agent. The sub-agent runs independently with its own context, "
+        "completes the goal, and returns the result. Use this when a task is complex enough to "
+        "benefit from a dedicated agent with its own plan. Budget is deducted from your remaining budget.",
+        {{"type", "object"}, {"properties", {
+            {"goal", {{"type", "string"}, {"description", "What the sub-agent should accomplish"}}},
+            {"tools", {{"type", "array"}, {"items", {{"type", "string"}}},
+                {"description", "Tools the sub-agent can use (default: same as parent)"}}},
+            {"budget", {{"type", "number"},
+                {"description", "Max budget in USD for the sub-agent (default: 20% of parent's remaining)"}}},
+            {"name", {{"type", "string"}, {"description", "Name for the sub-agent (default: sub-agent)"}}}
+        }}, {"required", json::array({"goal"})}});
+
     // ── MCP tools (dynamically discovered) ──
     if (mcp_) {
         auto mcp_tools = mcp_->list_tools();
@@ -443,6 +470,9 @@ std::string RunEngine::execute_tool(
 
     } else if (name == "recall") {
         return tool_recall(args.value("query", ""));
+
+    } else if (name == "delegate") {
+        return tool_delegate(args, model, cost, tokens);
     }
 
     // ── MCP tools (mcp_<server>_<tool>) ──
@@ -462,12 +492,112 @@ std::string RunEngine::execute_tool(
 
 // ── Main execution loop ─────────────────────────────────────────
 
+// ── delegate: spawn a sub-agent to handle a sub-task ──
+std::string RunEngine::tool_delegate(const json& args, const std::string& model, double& cost, int& tokens) {
+    if (!active_cfg_) {
+        return "[error] delegate not available outside a run";
+    }
+
+    // Depth check
+    if (active_cfg_->current_depth >= active_cfg_->max_depth) {
+        audit_.log(AuditCategory::SECURITY, "DELEGATE_DEPTH_EXCEEDED", agent_id_, "",
+            {{"depth", active_cfg_->current_depth}, {"max", active_cfg_->max_depth}}, false);
+        return "[error] max delegation depth (" + std::to_string(active_cfg_->max_depth) + ") reached";
+    }
+
+    std::string goal = args.value("goal", "");
+    if (goal.empty()) {
+        return "[error] goal is required";
+    }
+
+    // Budget: default to 20% of parent's remaining budget
+    double parent_remaining = active_cfg_->budget_usd - cost;
+    double sub_budget = args.value("budget", parent_remaining * 0.2);
+
+    // Can't exceed parent's remaining budget
+    if (sub_budget > parent_remaining) {
+        sub_budget = parent_remaining;
+    }
+    if (sub_budget <= 0.0001) {
+        return "[error] insufficient budget for sub-agent";
+    }
+
+    // Tools: inherit parent's or use specified
+    std::vector<std::string> sub_tools;
+    if (args.contains("tools") && args["tools"].is_array()) {
+        for (const auto& t : args["tools"]) {
+            sub_tools.push_back(t.get<std::string>());
+        }
+    } else {
+        sub_tools = active_cfg_->allowed_tools;
+    }
+
+    // Can't give sub-agent tools the parent doesn't have
+    if (!active_cfg_->allowed_tools.empty()) {
+        std::vector<std::string> filtered;
+        for (const auto& t : sub_tools) {
+            if (std::find(active_cfg_->allowed_tools.begin(),
+                          active_cfg_->allowed_tools.end(), t) != active_cfg_->allowed_tools.end()) {
+                filtered.push_back(t);
+            }
+        }
+        sub_tools = filtered;
+    }
+
+    std::string sub_name = args.value("name", "sub-" + std::to_string(active_cfg_->current_depth + 1));
+
+    // Build sub-agent config
+    RunConfig sub_cfg;
+    sub_cfg.goal = goal;
+    sub_cfg.model = model;
+    sub_cfg.budget_usd = sub_budget;
+    sub_cfg.max_steps = std::max(active_cfg_->max_steps / 2, 5); // half parent's steps
+    sub_cfg.allowed_tools = sub_tools;
+    sub_cfg.agent_name = sub_name;
+    sub_cfg.max_depth = active_cfg_->max_depth;
+    sub_cfg.current_depth = active_cfg_->current_depth + 1;
+
+    audit_.log(AuditCategory::RESOURCE, "DELEGATE_START", agent_id_, active_cfg_->agent_name, {
+        {"sub_agent", sub_name},
+        {"goal", goal.substr(0, 200)},
+        {"budget_usd", sub_budget},
+        {"depth", sub_cfg.current_depth},
+        {"tools", sub_tools},
+    });
+
+    // Execute sub-agent (synchronous — blocks until complete)
+    auto sub_result = execute(sub_cfg, nullptr);
+
+    // Deduct sub-agent cost from parent
+    cost += sub_result.total_cost_usd;
+    tokens += sub_result.total_tokens;
+
+    audit_.log(AuditCategory::RESOURCE, "DELEGATE_COMPLETE", agent_id_, active_cfg_->agent_name, {
+        {"sub_agent", sub_name},
+        {"success", sub_result.success},
+        {"cost_usd", sub_result.total_cost_usd},
+        {"steps", sub_result.steps},
+        {"depth", sub_cfg.current_depth},
+    });
+
+    if (sub_result.success) {
+        return "[sub-agent '" + sub_name + "' completed (" +
+               std::to_string(sub_result.steps) + " steps, $" +
+               std::to_string(sub_result.total_cost_usd) + ")]\n\n" +
+               sub_result.content;
+    } else {
+        return "[sub-agent '" + sub_name + "' failed: " + sub_result.error + "]\n" +
+               sub_result.content;
+    }
+}
+
 RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     RunResult result;
     result.step_log = json::array();
 
     // Assign agent ID for permission checks (0 = API caller, no restrictions by default)
     agent_id_ = 0;
+    active_cfg_ = &cfg;
 
     // Create chain
     std::string chain_id = cfg.chain_id;
@@ -497,13 +627,21 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
         }
     }
 
+    // Position-aware prompt structure (Lost in the Middle, Liu et al. 2023):
+    // HIGH attention zone (beginning) → agent identity, rules, capabilities
+    // LOW attention zone (middle)     → assembled context, memories (already added above)
+    // HIGH attention zone (end)       → the actual goal (added as user message)
     system_prompt +=
-        "You are an AI agent named '" + cfg.agent_name + "'. "
-        "Complete the user's goal using the tools available to you. "
-        "Call tools when you need to interact with the real world — read files, search the web, "
-        "execute commands, query databases, etc. "
-        "When you have the final answer, respond with text (no tool call). "
-        "Be concise and thorough.";
+        "You are an AI agent named '" + cfg.agent_name + "'.\n\n"
+        "CAPABILITIES:\n"
+        "You have access to real tools — file I/O, shell commands, HTTP requests, web search, "
+        "key-value storage, and persistent memory. Every action is audited and permission-gated.\n\n"
+        "RULES:\n"
+        "1. Before acting, write a brief plan (2-5 steps) for how you will accomplish the goal.\n"
+        "2. Execute your plan step by step using tool calls.\n"
+        "3. If a tool call fails, reflect on why and try a different approach.\n"
+        "4. When you have the final answer, respond with text (no tool call).\n"
+        "5. Be concise and thorough.";
 
     // Build messages
     json messages = json::array();
@@ -539,6 +677,28 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             {"step", result.steps},
             {"cost_usd", result.total_cost_usd},
         });
+
+        // Observation masking (JetBrains "Complexity Trap", NeurIPS 2025):
+        // Compress tool outputs older than 2 steps. Don't summarize — just truncate.
+        // Research shows this halves cost with equal or better quality.
+        if (result.steps > 2) {
+            int tool_msg_count = 0;
+            for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+                if ((*it).value("role", "") == "tool") {
+                    tool_msg_count++;
+                    if (tool_msg_count > 2) {
+                        // Compress old tool outputs
+                        std::string content = (*it).value("content", "");
+                        if (content.size() > 200) {
+                            std::string first_line = content.substr(0, content.find('\n'));
+                            if (first_line.size() > 100) first_line = first_line.substr(0, 100);
+                            (*it)["content"] = "[" + first_line + "... " +
+                                std::to_string(content.size()) + " chars truncated]";
+                        }
+                    }
+                }
+            }
+        }
 
         // Call LLM with tools
         json options;
@@ -662,6 +822,144 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     if (cancelled_ && result.error.empty()) {
         result.error = "cancelled";
         result.success = false;
+    }
+
+    // ── Reflexion (Shinn et al. 2023): retry on failure with self-reflection ──
+    // If the run failed AND we have budget remaining AND haven't been cancelled,
+    // generate a reflection and retry once. This gives +11-20% success rate.
+    if (!result.success && !cancelled_ &&
+        result.total_cost_usd < cfg.budget_usd * 0.8 &&  // need 20% budget headroom
+        !result.error.empty() && result.error != "budget exceeded")
+    {
+        emit(on_event, "reflecting", {
+            {"attempt", 1},
+            {"error", result.error},
+        });
+
+        // Generate reflection
+        std::string reflection_prompt =
+            "You attempted this task and encountered an error.\n\n"
+            "Goal: " + cfg.goal + "\n"
+            "Error: " + result.error + "\n"
+            "Steps taken: " + std::to_string(result.steps) + "\n\n"
+            "What went wrong and what should you do differently on your next attempt? "
+            "Be specific and actionable.";
+
+        auto reflection_resp = openrouter_.chat(active_model, reflection_prompt);
+        result.total_cost_usd += reflection_resp.usage.cost_usd;
+        result.total_tokens += reflection_resp.usage.total_tokens;
+
+        if (reflection_resp.success && !reflection_resp.content.empty()) {
+            audit_.log(AuditCategory::RESOURCE, "REFLEXION",
+                agent_id_, cfg.agent_name, {
+                    {"attempt", 1},
+                    {"reflection", reflection_resp.content.substr(0, 500)},
+                });
+
+            // Retry: add reflection to messages and continue the loop
+            messages.push_back({{"role", "user"}, {"content",
+                "Your previous attempt failed. Here is your reflection on what went wrong:\n\n" +
+                reflection_resp.content + "\n\nPlease try again with a different approach."}});
+
+            result.error.clear();
+
+            // Mini retry loop (up to max_steps/2 additional steps)
+            int retry_steps = 0;
+            int max_retry_steps = std::max(cfg.max_steps / 2, 3);
+
+            while (retry_steps < max_retry_steps &&
+                   result.total_cost_usd < cfg.budget_usd &&
+                   !cancelled_)
+            {
+                retry_steps++;
+                result.steps++;
+
+                emit(on_event, "thinking", {
+                    {"step", result.steps},
+                    {"cost_usd", result.total_cost_usd},
+                    {"retry", true},
+                });
+
+                // Observation masking on retry too
+                if (result.steps > 2) {
+                    int tool_msg_count = 0;
+                    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+                        if ((*it).value("role", "") == "tool") {
+                            tool_msg_count++;
+                            if (tool_msg_count > 2) {
+                                std::string content = (*it).value("content", "");
+                                if (content.size() > 200) {
+                                    std::string first_line = content.substr(0, content.find('\n'));
+                                    if (first_line.size() > 100) first_line = first_line.substr(0, 100);
+                                    (*it)["content"] = "[" + first_line + "... " +
+                                        std::to_string(content.size()) + " chars truncated]";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                json options;
+                if (!tools_desc.empty()) options["tools"] = tools_desc;
+
+                auto llm_resp = openrouter_.chat_messages(active_model, messages, options);
+                result.total_cost_usd += llm_resp.usage.cost_usd;
+                result.total_tokens += llm_resp.usage.total_tokens;
+                gateway_.record_cost(llm_resp.usage.cost_usd);
+
+                if (!llm_resp.success) {
+                    result.error = llm_resp.error;
+                    break;
+                }
+
+                json raw;
+                try { raw = json::parse(llm_resp.raw_json); } catch (...) {
+                    result.content = llm_resp.content;
+                    result.success = true;
+                    break;
+                }
+
+                auto choices = raw.value("choices", json::array());
+                if (choices.empty()) { result.content = llm_resp.content; result.success = true; break; }
+
+                auto choice = choices[0];
+                auto message = choice.value("message", json::object());
+                messages.push_back(message);
+
+                auto tool_calls = message.value("tool_calls", json::array());
+                if (tool_calls.empty() || choice.value("finish_reason", "") == "stop") {
+                    if (message.contains("content") && message["content"].is_string()) {
+                        result.content = message["content"].get<std::string>();
+                    } else {
+                        result.content = llm_resp.content;
+                    }
+                    result.success = true;
+                    break;
+                }
+
+                for (const auto& tc : tool_calls) {
+                    if (cancelled_) break;
+                    std::string tool_id = tc.value("id", "");
+                    auto fn = tc.value("function", json::object());
+                    std::string tool_name = fn.value("name", "");
+                    json tool_args;
+                    try { tool_args = json::parse(fn.value("arguments", "{}")); } catch (...) { tool_args = json::object(); }
+
+                    std::string tool_result = execute_tool(tool_name, tool_args, active_model,
+                        result.total_cost_usd, result.total_tokens);
+
+                    result.step_log.push_back({
+                        {"step", result.steps}, {"tool", tool_name},
+                        {"args", tool_args}, {"result_preview", tool_result.substr(0, 200)},
+                        {"retry", true},
+                    });
+
+                    messages.push_back({
+                        {"role", "tool"}, {"tool_call_id", tool_id}, {"content", tool_result}
+                    });
+                }
+            }
+        }
     }
 
     // Store final result as artifact

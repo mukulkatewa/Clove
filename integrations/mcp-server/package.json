@@ -1,0 +1,20 @@
+{
+  "name": "@clove/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing CLOVE kernel memory, artifacts, and governance to any MCP client",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": { "clove-mcp": "dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}

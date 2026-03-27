@@ -37,6 +37,8 @@ struct RunConfig {
     std::vector<std::string> allowed_tools;
     std::string agent_name = "agent";
     std::string chain_id;        // If empty, engine creates one
+    int max_depth = 3;           // Max sub-agent nesting depth
+    int current_depth = 0;       // Current nesting level (0 = top-level)
 };
 
 /// Result of a completed run.
@@ -94,7 +96,8 @@ private:
     ContextAssembler* assembler_;
     const KernelConfig& config_;
     std::atomic<bool> cancelled_{false};
-    uint32_t agent_id_ = 0;  // set per-run for permission checks
+    uint32_t agent_id_ = 0;       // set per-run for permission checks
+    const RunConfig* active_cfg_ = nullptr;  // current run config (for sub-agent spawning)
 
     nlohmann::json build_tools(const std::vector<std::string>& allowed);
     std::string execute_tool(const std::string& name, const nlohmann::json& args,
@@ -108,6 +111,7 @@ private:
     std::string tool_http(const std::string& url, const std::string& method, const std::string& body);
     std::string tool_search(const std::string& query, const std::string& model, double& cost, int& tokens);
     std::string tool_mcp_call(const std::string& server, const std::string& tool, const nlohmann::json& args);
+    std::string tool_delegate(const nlohmann::json& args, const std::string& model, double& cost, int& tokens);
     std::string tool_remember(const std::string& fact);
     std::string tool_recall(const std::string& query);
 };

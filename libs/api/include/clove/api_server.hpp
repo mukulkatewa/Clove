@@ -1,5 +1,6 @@
 #pragma once
 #include <clove/config.hpp>
+#include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
 #include <thread>
@@ -80,8 +81,12 @@ private:
 
     class Impl;
     std::unique_ptr<Impl> impl_;
+    std::unique_ptr<std::thread> scheduler_thread_;
+    std::atomic<bool> scheduler_running_{false};
 
     void setup_routes();
+    void run_scheduler();
+    void fire_webhooks(const std::string& event_type, const nlohmann::json& data);
 };
 
 } // namespace clove

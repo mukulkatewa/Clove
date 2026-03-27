@@ -17,6 +17,7 @@ import type { Command } from 'commander'
 import { registerCliCommands } from './cli.js'
 import { handleSlashCommand } from './commands/slash.js'
 import { startKernel, stopKernel, isKernelRunning } from './kernel-manager.js'
+import { registerCloveTools } from './tools.js'
 
 // ---------------------------------------------------------------------------
 // OpenClaw Plugin SDK compatible types (mirrors openclaw/plugin-sdk)
@@ -223,6 +224,10 @@ export default function register(api: OpenClawPluginApi): void {
       await stopKernel(cfg, logger)
     },
   })
+
+  // 5. Register CLOVE tools as native OpenClaw commands
+  // These bypass the MCP bridge and call the kernel REST API directly.
+  registerCloveTools(api)
 
   // Banner
   api.logger.info('')

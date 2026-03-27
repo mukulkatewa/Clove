@@ -34,6 +34,7 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <sys/wait.h>
 #include <algorithm>
 #include <future>
 #include <atomic>
@@ -91,16 +92,154 @@ bool ApiServer::start(uint16_t port, const std::string& api_key) {
 
     // Give the server a moment to start up
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Start scheduler thread (checks cron every 60s)
+    scheduler_running_ = true;
+    scheduler_thread_ = std::make_unique<std::thread>([this]() { run_scheduler(); });
+
     return running_;
 }
 
 void ApiServer::stop() {
     if (!running_) return;
+    scheduler_running_ = false;
+    if (scheduler_thread_ && scheduler_thread_->joinable()) {
+        scheduler_thread_->join();
+    }
     impl_->stop();
     if (server_thread_ && server_thread_->joinable()) {
         server_thread_->join();
     }
     running_ = false;
+}
+
+// ── Cron scheduler — checks every 60s, fires matching schedules ──
+
+static bool cron_matches_now(const std::string& cron_expr) {
+    // Simple cron parser: "min hour dom month dow"
+    // Supports: numbers, * (any), ranges not supported (keep it simple)
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    auto* tm = std::localtime(&time_t);
+
+    std::istringstream ss(cron_expr);
+    std::string min_s, hour_s, dom_s, mon_s, dow_s;
+    ss >> min_s >> hour_s >> dom_s >> mon_s >> dow_s;
+
+    auto matches = [](const std::string& field, int value) -> bool {
+        if (field == "*") return true;
+        try { return std::stoi(field) == value; } catch (...) { return false; }
+    };
+
+    return matches(min_s, tm->tm_min) &&
+           matches(hour_s, tm->tm_hour) &&
+           matches(dom_s, tm->tm_mday) &&
+           matches(mon_s, tm->tm_mon + 1) &&
+           matches(dow_s, tm->tm_wday);
+}
+
+void ApiServer::run_scheduler() {
+    spdlog::info("Scheduler thread started (60s interval)");
+    while (scheduler_running_) {
+        // Sleep 60s in 1s increments so we can exit quickly
+        for (int i = 0; i < 60 && scheduler_running_; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        if (!scheduler_running_) break;
+
+        // Check all schedules
+        auto all_keys = ctx_.state_store.keys("schedule:", 0);
+        for (const auto& key : all_keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (!val) continue;
+
+            try {
+                auto schedule = *val;
+                if (!schedule.value("enabled", true)) continue;
+
+                std::string cron = schedule.value("cron", "");
+                if (cron.empty() || !cron_matches_now(cron)) continue;
+
+                // Fire the run
+                auto run_cfg = schedule.value("run", json::object());
+                std::string goal = run_cfg.value("goal", "");
+                double budget = run_cfg.value("budget", 1.0);
+                int agents = run_cfg.value("agents", 1);
+
+                if (goal.empty()) continue;
+
+                spdlog::info("Scheduler firing: {} ({})", schedule.value("name", "?"), cron);
+
+                ctx_.audit_logger.log(AuditCategory::RESOURCE, "SCHEDULE_FIRED",
+                    0, "", {{"name", schedule.value("name", "")}, {"cron", cron}});
+
+                // Run as fleet or single
+                if (agents > 1 && ctx_.openrouter && ctx_.openrouter->is_configured()) {
+                    // Use fleet — but we'd need to call the fleet handler
+                    // For now, run as single agent
+                    RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+                        ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
+                        ctx_.artifact_store, ctx_.chain_store,
+                        ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+                    RunConfig cfg;
+                    cfg.goal = goal;
+                    cfg.budget_usd = budget;
+                    cfg.agent_name = "scheduled-" + schedule.value("name", "agent");
+                    auto result = engine.execute(cfg);
+
+                    fire_webhooks("run_complete", {
+                        {"schedule", schedule.value("name", "")},
+                        {"success", result.success},
+                        {"cost_usd", result.total_cost_usd},
+                        {"content_preview", result.content.substr(0, 200)},
+                    });
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("Scheduler error for {}: {}", key, e.what());
+            }
+        }
+    }
+    spdlog::info("Scheduler thread stopped");
+}
+
+// ── Webhook dispatcher ──
+
+void ApiServer::fire_webhooks(const std::string& event_type, const json& data) {
+    auto all_keys = ctx_.state_store.keys("webhook:", 0);
+    for (const auto& key : all_keys) {
+        auto val = ctx_.state_store.fetch(key, 0);
+        if (!val) continue;
+
+        try {
+            auto webhook = *val;
+            if (!webhook.value("enabled", true)) continue;
+
+            auto events = webhook.value("events", json::array());
+            bool matched = false;
+            for (const auto& ev : events) {
+                if (ev.get<std::string>() == event_type) { matched = true; break; }
+            }
+            if (!matched) continue;
+
+            std::string url = webhook.value("url", "");
+            if (url.empty()) continue;
+
+            // Fire webhook via CURL (non-blocking — fire and forget)
+            json payload;
+            payload["event"] = event_type;
+            payload["data"] = data;
+            payload["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+            std::string body = payload.dump();
+            std::string cmd = "curl -s -X POST '" + url + "' -H 'Content-Type: application/json' -d '" + body + "' > /dev/null 2>&1 &";
+            std::system(cmd.c_str());
+
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "WEBHOOK_FIRED",
+                0, "", {{"url", url}, {"event", event_type}});
+
+        } catch (...) {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +1002,72 @@ void ApiServer::setup_routes() {
     // ===================================================================
 
     // -----------------------------------------------------------------------
+    // Exec — direct shell command execution (no LLM, no agent loop)
+    // POST /api/exec  {"command": "ls -la", "workdir": "/tmp", "timeout_ms": 30000}
+    // Used by sandbox providers (OpenClaw CLOVE provider) for direct tool execution.
+    // -----------------------------------------------------------------------
+    svr.Post("/api/exec", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string command = body.value("command", "");
+            std::string workdir = body.value("workdir", "");
+            int timeout_ms = body.value("timeout_ms", 30000);
+
+            if (command.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"command is required"})", "application/json");
+                return;
+            }
+
+            // Permission check
+            auto& perms = ctx_.permissions_store.get_or_create(0);
+            if (!perms.can_exec) {
+                ctx_.audit_logger.log(AuditCategory::SECURITY, "EXEC_DENIED", 0, "", {{"command", command}}, false);
+                res.status = 403;
+                res.set_content(R"({"error":"exec permission denied"})", "application/json");
+                return;
+            }
+
+            // Audit
+            ctx_.audit_logger.log(AuditCategory::SYSCALL, "DIRECT_EXEC", 0, "", {{"command", command}});
+
+            // Execute via popen
+            std::string full_cmd = command;
+            if (!workdir.empty()) {
+                full_cmd = "cd " + workdir + " && " + command;
+            }
+            full_cmd += " 2>&1";
+
+            FILE* pipe = popen(full_cmd.c_str(), "r");
+            if (!pipe) {
+                res.status = 500;
+                res.set_content(R"({"error":"popen failed"})", "application/json");
+                return;
+            }
+
+            std::string output;
+            char buf[4096];
+            while (fgets(buf, sizeof(buf), pipe)) {
+                output += buf;
+                if (output.size() > 512 * 1024) break; // 512KB cap
+            }
+            int exit_code = pclose(pipe);
+            exit_code = WIFEXITED(exit_code) ? WEXITSTATUS(exit_code) : -1;
+
+            json j;
+            j["stdout"] = output;
+            j["stderr"] = "";
+            j["exit_code"] = exit_code;
+            j["command"] = command;
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid request: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
     // Think — one-shot LLM call with cost tracking
     // POST /api/think  {"prompt": "...", "model": "optional"}
     // -----------------------------------------------------------------------
@@ -964,14 +1169,17 @@ void ApiServer::setup_routes() {
                 return;
             }
 
-            // PII filter on all user messages
+            // PII filter on ALL messages (user, system, assistant — OpenClaw embeds
+            // user content across all roles in its conversation history)
             size_t pii_count = 0;
             if (ctx_.privacy_filter.is_enabled()) {
                 for (auto& msg : messages) {
-                    if (msg.value("role", "") == "user" && msg.contains("content") && msg["content"].is_string()) {
+                    if (msg.contains("content") && msg["content"].is_string()) {
                         auto pii_result = ctx_.privacy_filter.redact(msg["content"].get<std::string>());
-                        msg["content"] = pii_result.cleaned_text;
-                        pii_count += pii_result.matches.size();
+                        if (pii_result.matches.size() > 0) {
+                            msg["content"] = pii_result.cleaned_text;
+                            pii_count += pii_result.matches.size();
+                        }
                     }
                 }
             }
@@ -984,6 +1192,8 @@ void ApiServer::setup_routes() {
             if (model == "auto" || model.empty()) {
                 model = ctx_.config.llm_model;
             }
+
+            bool stream = body.value("stream", false);
 
             // Call LLM via OpenRouter
             auto llm_resp = ctx_.openrouter->chat_messages(model, messages);
@@ -1000,6 +1210,7 @@ void ApiServer::setup_routes() {
                     {"tokens", llm_resp.usage.total_tokens},
                     {"cost_usd", llm_resp.usage.cost_usd},
                     {"pii_redacted", pii_count},
+                    {"stream", stream},
                 });
 
             // Generate a unique ID
@@ -1007,7 +1218,60 @@ void ApiServer::setup_routes() {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
             std::string id = "chatcmpl-clove-" + std::to_string(ms);
 
-            // Return OpenAI-compatible response
+            if (stream) {
+                // SSE streaming response — OpenClaw and other clients expect this
+                res.set_header("Content-Type", "text/event-stream");
+                res.set_header("Cache-Control", "no-cache");
+                res.set_header("Connection", "keep-alive");
+
+                // Chunk 1: the content
+                json chunk;
+                chunk["id"] = id;
+                chunk["object"] = "chat.completion.chunk";
+                chunk["created"] = ms / 1000;
+                chunk["model"] = llm_resp.model_used;
+
+                json delta;
+                delta["role"] = "assistant";
+                delta["content"] = llm_resp.content;
+
+                json ch;
+                ch["index"] = 0;
+                ch["delta"] = delta;
+                ch["finish_reason"] = nullptr;
+                chunk["choices"] = json::array({ch});
+
+                std::string sse = "data: " + chunk.dump() + "\n\n";
+
+                // Chunk 2: finish
+                json finish_chunk;
+                finish_chunk["id"] = id;
+                finish_chunk["object"] = "chat.completion.chunk";
+                finish_chunk["created"] = ms / 1000;
+                finish_chunk["model"] = llm_resp.model_used;
+
+                json finish_delta;
+                json fch;
+                fch["index"] = 0;
+                fch["delta"] = json::object();
+                fch["finish_reason"] = "stop";
+                finish_chunk["choices"] = json::array({fch});
+
+                // Usage in final chunk (OpenAI spec)
+                finish_chunk["usage"] = json{
+                    {"prompt_tokens", llm_resp.usage.prompt_tokens},
+                    {"completion_tokens", llm_resp.usage.completion_tokens},
+                    {"total_tokens", llm_resp.usage.total_tokens},
+                };
+
+                sse += "data: " + finish_chunk.dump() + "\n\n";
+                sse += "data: [DONE]\n\n";
+
+                res.set_content(sse, "text/event-stream");
+                return;
+            }
+
+            // Non-streaming response
             json resp;
             resp["id"] = id;
             resp["object"] = "chat.completion";
@@ -1026,7 +1290,6 @@ void ApiServer::setup_routes() {
             usage["total_tokens"] = llm_resp.usage.total_tokens;
             resp["usage"] = usage;
 
-            // Extra CLOVE fields (non-standard but useful)
             resp["clove"] = json{
                 {"cost_usd", llm_resp.usage.cost_usd},
                 {"pii_redacted", pii_count},
@@ -1592,6 +1855,35 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
+    // Memory — relevance search
+    // GET /api/memory/search?q=query&limit=5
+    // -----------------------------------------------------------------------
+    svr.Get("/api/memory/search", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.memory_blocks) {
+            res.set_content(R"({"results":[],"count":0})", "application/json");
+            return;
+        }
+        std::string query = req.get_param_value("q");
+        int limit = 5;
+        if (req.has_param("limit")) {
+            try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        }
+
+        auto scored = ctx_.memory_blocks->search(query, 0, static_cast<size_t>(limit));
+        json arr = json::array();
+        for (const auto& sb : scored) {
+            json j = memory_block_to_json(sb.block);
+            j["relevance_score"] = sb.score;
+            arr.push_back(j);
+        }
+        json resp;
+        resp["results"] = arr;
+        resp["count"] = arr.size();
+        resp["query"] = query;
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
     // Memory — list blocks
     // GET /api/memory
     // -----------------------------------------------------------------------
@@ -1725,6 +2017,91 @@ void ApiServer::setup_routes() {
     });
 
     // ===================================================================
+    // ===================================================================
+    // ===================================================================
+    // Permissions — per-agent sandbox visualization
+    // ===================================================================
+
+    // GET /api/agents/:id/permissions
+    svr.Get(R"(/api/agents/(\d+)/permissions)", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t agent_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        auto& perms = ctx_.permissions_store.get_or_create(agent_id);
+        auto& budget = ctx_.permissions_store.get_or_create_budget(agent_id);
+        json j;
+        j["agent_id"] = agent_id;
+        j["permissions"] = perms.to_json();
+        j["budget"] = budget.to_json();
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // PUT /api/agents/:id/permissions
+    svr.Put(R"(/api/agents/(\d+)/permissions)", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t agent_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        try {
+            auto body = json::parse(req.body);
+            if (body.contains("permissions")) {
+                auto perms = AgentPermissions::from_json(body["permissions"]);
+                ctx_.permissions_store.set_permissions(agent_id, perms);
+            }
+            if (body.contains("budget")) {
+                auto budget = AgentBudget::from_json(body["budget"]);
+                ctx_.permissions_store.set_budget(agent_id, budget);
+            }
+            ctx_.audit_logger.log(AuditCategory::SECURITY, "PERMISSIONS_UPDATED",
+                agent_id, "", {{"body", body}});
+            res.set_content(R"({"success":true})", "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j; j["error"] = std::string("invalid: ") + e.what();
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+
+    // GET /api/sandbox/overview — all agents, permissions, budgets, activity
+    svr.Get("/api/sandbox/overview", [this](const httplib::Request&, httplib::Response& res) {
+        json agents_arr = json::array();
+
+        // Get OpenClaw instances
+        if (ctx_.openclaw) {
+            auto instances = ctx_.openclaw->list();
+            for (const auto* inst : instances) {
+                auto& perms = ctx_.permissions_store.get_or_create(0);
+                auto& budget = ctx_.permissions_store.get_or_create_budget(0);
+                json a;
+                a["id"] = inst->id;
+                a["name"] = inst->name;
+                a["type"] = "openclaw";
+                a["state"] = inst->state;
+                a["pid"] = inst->sandbox ? inst->sandbox->pid() : -1;
+                a["budget_usd"] = inst->config.budget_usd;
+                a["cost_usd"] = inst->cost_usd;
+                a["channels"] = inst->config.channels;
+                a["started_at_ms"] = inst->started_at_ms;
+                a["permissions"] = perms.to_json();
+                a["budget_tracking"] = budget.to_json();
+                agents_arr.push_back(a);
+            }
+        }
+
+        // Get recent audit for activity feed
+        auto audit = ctx_.audit_logger.get_entries(nullptr, nullptr, 0, 20);
+        json activity = json::array();
+        for (const auto& e : audit) {
+            activity.push_back(e.to_json());
+        }
+
+        // Cost
+        json cost;
+        cost["total_usd"] = ctx_.inference_gateway.get_config().current_cost_usd;
+
+        json resp;
+        resp["agents"] = agents_arr;
+        resp["activity"] = activity;
+        resp["cost"] = cost;
+        resp["memory_blocks"] = ctx_.memory_blocks ? static_cast<int>(ctx_.memory_blocks->list(0, 1000).size()) : 0;
+        res.set_content(resp.dump(), "application/json");
+    });
+
     // ===================================================================
     // IPC — Agent-to-Agent Messaging
     // ===================================================================

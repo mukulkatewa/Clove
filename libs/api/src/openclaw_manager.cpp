@@ -90,27 +90,47 @@ std::string OpenClawManager::create_config_dir(const OpenClawInstanceConfig& cfg
         soul << cfg.soul;
     }
 
-    // Write openclaw.json — routes LLM through CLOVE kernel
+    // Read the user's existing ~/.openclaw/openclaw.json to get credentials (bot tokens, etc.)
+    json user_config;
+    {
+        const char* home = getenv("HOME");
+        std::string user_config_path = std::string(home ? home : "") + "/.openclaw/openclaw.json";
+        std::ifstream user_file(user_config_path);
+        if (user_file.is_open()) {
+            try { user_config = json::parse(user_file); } catch (...) {}
+        }
+    }
+
+    // Build openclaw.json — routes LLM through CLOVE kernel
     json oc_config;
 
-    // Point LLM at CLOVE's OpenAI-compatible endpoint
+    // Models: use OpenClaw's real format (models.providers.<name>)
+    std::string model_id = cfg.model.empty() ? config_.llm_model : cfg.model;
     oc_config["models"] = json{
-        {"default", json{
-            {"provider", "openai-compatible"},
-            {"baseUrl", "http://localhost:" + std::to_string(config_.api_port) + "/api/v1"},
-            {"apiKey", "clove-internal"},
+        {"providers", json{
+            {"clove", json{
+                {"baseUrl", "http://localhost:" + std::to_string(config_.api_port) + "/api/v1"},
+                {"apiKey", "clove-internal"},
+                {"api", "openai-completions"},
+                {"models", json::array({
+                    json{
+                        {"id", model_id},
+                        {"name", model_id + " (via CLOVE)"},
+                        {"reasoning", false},
+                        {"input", json::array({"text"})},
+                        {"cost", json{{"input", 0.0}, {"output", 0.0}, {"cacheRead", 0.0}, {"cacheWrite", 0.0}}},
+                        {"contextWindow", 1000000},
+                        {"maxTokens", 8192},
+                    }
+                })},
+            }}
         }}
     };
-
-    // Set the model
-    if (!cfg.model.empty()) {
-        oc_config["models"]["default"]["model"] = cfg.model;
-    }
 
     // Gateway config
     oc_config["gateway"] = json{
         {"port", api_port},
-        {"headless", true},
+        {"mode", "local"},
     };
 
     // Sandbox — disable OpenClaw's own Docker sandbox, CLOVE handles it
@@ -120,13 +140,21 @@ std::string OpenClawManager::create_config_dir(const OpenClawInstanceConfig& cfg
         }}
     };
 
-    // Channels
-    // Note: channel credentials come from the user's ~/.openclaw/ dir,
-    // we just ensure the config allows them
+    // Channels — merge from user config to get bot tokens
     if (!cfg.channels.empty()) {
         json channels = json::object();
         for (const auto& ch : cfg.channels) {
-            channels[ch] = json{{"enabled", true}};
+            // Copy channel config from user's ~/.openclaw/openclaw.json (includes bot tokens)
+            if (user_config.contains("channels") && user_config["channels"].contains(ch)) {
+                channels[ch] = user_config["channels"][ch];
+                channels[ch]["enabled"] = true;
+            } else {
+                channels[ch] = json{{"enabled", true}};
+            }
+            // Ensure group policy is open
+            if (!channels[ch].contains("groupPolicy")) {
+                channels[ch]["groupPolicy"] = "open";
+            }
         }
         oc_config["channels"] = channels;
     }
@@ -171,9 +199,11 @@ std::string OpenClawManager::spawn(const OpenClawInstanceConfig& cfg) {
     sbox_cfg.name = "openclaw-" + cfg.name;
     sbox_cfg.enable_network = true;  // OpenClaw needs network for chat platforms
 
-    // macOS: enable Seatbelt; Linux: enable namespaces + seccomp
-    sbox_cfg.enable_landlock = true;
-    sbox_cfg.enable_seccomp = true;
+    // Disable OS-level sandbox for OpenClaw — Node.js needs broad filesystem/network access.
+    // CLOVE still enforces: LLM cost tracking, PII filtering, audit trail, budget enforcement.
+    // TODO: build a tailored Seatbelt profile for Node.js/OpenClaw specifically.
+    sbox_cfg.enable_landlock = false;
+    sbox_cfg.enable_seccomp = false;
 
     // File access
     sbox_cfg.allowed_paths = cfg.allowed_read_paths;
@@ -207,14 +237,34 @@ std::string OpenClawManager::spawn(const OpenClawInstanceConfig& cfg) {
     // Build OpenClaw command args
     std::vector<std::string> args = {
         "gateway",
-        "--headless",
-        "--config", config_dir + "/openclaw.json",
     };
 
-    // If SOUL.md exists, set the profile dir
-    if (!cfg.soul.empty()) {
-        args.push_back("--profile");
-        args.push_back(config_dir);
+    // Point OpenClaw at our config by overwriting ~/.openclaw/openclaw.json
+    // (backup the original first)
+    {
+        const char* home = getenv("HOME");
+        std::string oc_dir = std::string(home ? home : "") + "/.openclaw";
+        std::string oc_config = oc_dir + "/openclaw.json";
+        std::string oc_backup = oc_dir + "/openclaw.json.clove-backup";
+        // Backup if not already backed up
+        if (fs::exists(oc_config) && !fs::exists(oc_backup)) {
+            try { fs::copy_file(oc_config, oc_backup); } catch (...) {}
+        }
+        // Write our config
+        std::ifstream src(config_dir + "/openclaw.json");
+        std::string content((std::istreambuf_iterator<char>(src)), std::istreambuf_iterator<char>());
+        std::ofstream dst(oc_config, std::ios::trunc);
+        dst << content;
+    }
+
+    // Copy approved senders from user config so pairing isn't needed again
+    {
+        const char* home = getenv("HOME");
+        std::string user_approved = std::string(home ? home : "") + "/.openclaw/approved-senders.json";
+        std::string dest_approved = config_dir + "/approved-senders.json";
+        if (fs::exists(user_approved)) {
+            try { fs::copy_file(user_approved, dest_approved, fs::copy_options::overwrite_existing); } catch (...) {}
+        }
     }
 
     spdlog::info("Spawning OpenClaw instance '{}' (id={}, port={})", cfg.name, id, port);
