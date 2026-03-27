@@ -458,6 +458,13 @@ switch (cmd) {
   case 'c':
     cmdConfig(args.slice(1))
     break
+  case 'build': {
+    const scriptPath = new URL('../scripts/postinstall.js', import.meta.url).pathname
+    try {
+      execSync(`node ${scriptPath}`, { stdio: 'inherit' })
+    } catch {}
+    break
+  }
   case 'help':
   case '--help':
   case '-h':

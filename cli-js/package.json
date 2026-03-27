@@ -8,11 +8,15 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "postinstall": "node scripts/postinstall.js"
   },
-  "files": ["dist"],
-  "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw"],
+  "files": ["dist", "scripts"],
+  "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw", "llm"],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "devDependencies": {
     "typescript": "^5.5.0",
     "@types/node": "^22.0.0"
