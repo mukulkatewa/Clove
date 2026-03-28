@@ -1,24 +1,49 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg: #0a0a0f;
-  --bg-card: #12121a;
-  --bg-hover: #1a1a26;
-  --border: #1e1e2e;
-  --text: #e4e4ef;
-  --text-dim: #6b6b80;
-  --accent: #8ff5ff;
-  --accent-dim: #8ff5ff20;
-  --green: #4ade80;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --blue: #60a5fa;
+  --bg: #f8f8fa;
+  --bg-card: #ffffff;
+  --bg-raised: #f1f1f4;
+  --bg-hover: #eeeef1;
+  --border: #e4e4e9;
+  --border-subtle: #eeeff2;
+  --text: #1a1a22;
+  --text-secondary: #50505e;
+  --text-dim: #9a9aab;
+  --accent: #5046e5;
+  --accent-light: #eeedfc;
+  --green: #1a9a5c;
+  --green-light: #e8f8f0;
+  --red: #dc3b42;
+  --red-light: #fde8ea;
+  --yellow: #c48a08;
+  --yellow-light: #fef5e2;
+  --blue: #2478e0;
+  --blue-light: #e6f0ff;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.05);
 }
+
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.01em;
 }
 
-.mono { font-family: 'SF Mono', 'Fira Code', monospace; }
+.mono {
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 0.88em;
+  letter-spacing: -0.02em;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+}

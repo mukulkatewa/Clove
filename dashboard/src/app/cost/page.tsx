@@ -22,28 +22,28 @@ export default function CostPage() {
 
   return (
     <div>
-      <h2 className="text-2xl font-semibold mb-1">Cost</h2>
-      <p className="text-sm mb-8" style={{ color: 'var(--text-dim)' }}>
+      <h2 style={{ fontSize: 24, fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>Cost</h2>
+      <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 32 }}>
         LLM spend tracked at the kernel level. Every token accounted for.
       </p>
 
       {/* Cost summary */}
       <div className="grid grid-cols-3 gap-4 mb-8">
-        <div className="border rounded-lg p-5" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)' }}>
-          <div className="text-xs mb-2" style={{ color: 'var(--text-dim)' }}>Total Spend</div>
-          <div className="text-3xl font-semibold mono" style={{ color: 'var(--accent)' }}>
+        <div className="card" style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Total Spend</div>
+          <div className="mono" style={{ fontSize: 30, fontWeight: 600, color: 'var(--accent)' }}>
             ${totalCost.toFixed(4)}
           </div>
         </div>
-        <div className="border rounded-lg p-5" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)' }}>
-          <div className="text-xs mb-2" style={{ color: 'var(--text-dim)' }}>Budget</div>
-          <div className="text-3xl font-semibold mono" style={{ color: maxCost > 0 ? 'var(--yellow)' : 'var(--text-dim)' }}>
+        <div className="card" style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Budget</div>
+          <div className="mono" style={{ fontSize: 30, fontWeight: 600, color: maxCost > 0 ? 'var(--yellow)' : 'var(--text-dim)' }}>
             {maxCost > 0 ? `$${maxCost.toFixed(2)}` : 'None'}
           </div>
         </div>
-        <div className="border rounded-lg p-5" style={{ borderColor: 'var(--border)', background: 'var(--bg-card)' }}>
-          <div className="text-xs mb-2" style={{ color: 'var(--text-dim)' }}>Total Runs</div>
-          <div className="text-3xl font-semibold mono" style={{ color: 'var(--blue)' }}>
+        <div className="card" style={{ padding: 20 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Total Runs</div>
+          <div className="mono" style={{ fontSize: 30, fontWeight: 600, color: 'var(--blue)' }}>
             {history.length}
           </div>
         </div>
@@ -52,14 +52,16 @@ export default function CostPage() {
       {/* Budget bar */}
       {maxCost > 0 && (
         <div className="mb-8">
-          <div className="flex justify-between text-xs mb-2" style={{ color: 'var(--text-dim)' }}>
+          <div className="flex justify-between" style={{ fontSize: 12, marginBottom: 8, color: 'var(--text-dim)' }}>
             <span>Budget usage</span>
             <span>{pct.toFixed(1)}%</span>
           </div>
-          <div className="h-3 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+          <div className="overflow-hidden" style={{ height: 12, borderRadius: 9999, background: 'var(--border)' }}>
             <div
-              className="h-full rounded-full transition-all duration-500"
+              className="transition-all duration-500"
               style={{
+                height: '100%',
+                borderRadius: 9999,
                 width: `${pct}%`,
                 background: pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--yellow)' : 'var(--green)',
               }}
@@ -69,30 +71,30 @@ export default function CostPage() {
       )}
 
       {/* Cost per run */}
-      <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-dim)' }}>
-        COST PER RUN
+      <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: 'var(--text)' }}>
+        Cost Per Run
       </h3>
-      <p className="text-xs mb-4" style={{ color: 'var(--text-dim)' }}>
+      <p style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
         Detailed per-run cost breakdown coming soon. Current data shows run history.
       </p>
-      <div className="border rounded-lg overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         {history.length === 0 ? (
-          <div className="p-8 text-center text-sm" style={{ color: 'var(--text-dim)' }}>No runs yet.</div>
+          <div style={{ padding: 32, textAlign: 'center', fontSize: 14, color: 'var(--text-dim)' }}>No runs yet.</div>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr style={{ background: 'var(--bg-card)' }}>
-                <th className="text-left p-3 font-medium" style={{ color: 'var(--text-dim)' }}>Run</th>
-                <th className="text-left p-3 font-medium" style={{ color: 'var(--text-dim)' }}>Goal</th>
-                <th className="text-right p-3 font-medium" style={{ color: 'var(--text-dim)' }}>Time</th>
+              <tr style={{ background: 'var(--bg)' }}>
+                <th className="text-left p-3" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>Run</th>
+                <th className="text-left p-3" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>Goal</th>
+                <th className="text-right p-3" style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>Time</th>
               </tr>
             </thead>
             <tbody>
               {history.map((run, i) => (
-                <tr key={i} className="border-t" style={{ borderColor: 'var(--border)' }}>
-                  <td className="p-3 mono text-xs" style={{ color: 'var(--accent)' }}>{run.name}</td>
-                  <td className="p-3 truncate max-w-md">{run.description}</td>
-                  <td className="p-3 text-right text-xs" style={{ color: 'var(--text-dim)' }}>
+                <tr key={i} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <td className="p-3 mono" style={{ fontSize: 12, color: 'var(--accent)' }}>{run.name}</td>
+                  <td className="p-3 truncate max-w-md" style={{ color: 'var(--text-secondary)' }}>{run.description}</td>
+                  <td className="p-3 text-right" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                     {new Date(run.created_at_ms).toLocaleString()}
                   </td>
                 </tr>

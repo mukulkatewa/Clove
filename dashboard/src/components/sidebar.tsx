@@ -2,52 +2,72 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
-const nav = [
-  { href: '/', label: 'Overview', icon: '~' },
-  { href: '/agents', label: 'Sandbox', icon: '|' },
-  { href: '/runs', label: 'Runs', icon: '>' },
-  { href: '/fleet', label: 'Fleet', icon: '#' },
-  { href: '/openclaw', label: 'OpenClaw', icon: '@' },
-  { href: '/audit', label: 'Audit', icon: '!' },
-  { href: '/cost', label: 'Cost', icon: '$' },
-  { href: '/settings', label: 'Settings', icon: '*' },
+const main = [
+  { href: '/', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4' },
+  { href: '/agents', label: 'Sandbox', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z' },
+  { href: '/worlds', label: 'Worlds', icon: 'M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { href: '/runs', label: 'Runs', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
+  { href: '/fleet', label: 'Fleet', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+  { href: '/openclaw', label: 'OpenClaw', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
+  { href: '/memory', label: 'Memory', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4' },
+]
+
+const monitor = [
+  { href: '/audit', label: 'Audit', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' },
+  { href: '/cost', label: 'Cost', icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { href: '/settings', label: 'Settings', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
 ]
 
 export function Sidebar() {
   const pathname = usePathname()
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-56 border-r border-[var(--border)] bg-[var(--bg)] flex flex-col z-50">
-      <div className="p-5 border-b border-[var(--border)]">
-        <h1 className="text-lg font-bold tracking-wider" style={{ color: 'var(--accent)' }}>
-          CLOVE
-        </h1>
-        <p className="text-xs mt-1" style={{ color: 'var(--text-dim)' }}>
-          Agent Fleet OS
-        </p>
+    <aside className="fixed left-0 top-0 h-screen w-[240px] flex flex-col z-50" style={{ background: 'var(--bg-card)', borderRight: '1px solid var(--border)' }}>
+      {/* Logo */}
+      <div className="px-6 pt-6 pb-5">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, var(--accent), #7c3aed)' }}>
+            <span className="text-white text-[13px] font-bold">C</span>
+          </div>
+          <div>
+            <div className="text-[15px] font-semibold tracking-[-0.02em]">CLOVE</div>
+            <div className="text-[10px] tracking-[0.04em] uppercase" style={{ color: 'var(--text-dim)' }}>Agent Fleet OS</div>
+          </div>
+        </div>
       </div>
-      <nav className="flex-1 py-3">
-        {nav.map((item) => {
-          const active = pathname === item.href
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-3 px-5 py-2.5 text-sm transition-colors ${
-                active
-                  ? 'bg-[var(--accent-dim)] text-[var(--accent)] border-r-2 border-[var(--accent)]'
-                  : 'text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[var(--bg-hover)]'
-              }`}
-            >
-              <span className="mono w-4 text-center">{item.icon}</span>
-              {item.label}
-            </Link>
-          )
-        })}
+
+      {/* Main nav */}
+      <nav className="flex-1 px-3 overflow-y-auto">
+        <div className="text-[10px] font-medium uppercase tracking-[0.08em] px-3 mb-2" style={{ color: 'var(--text-dim)' }}>Main</div>
+        {main.map((item) => <NavItem key={item.href} item={item} active={pathname === item.href} />)}
+
+        <div className="text-[10px] font-medium uppercase tracking-[0.08em] px-3 mt-5 mb-2" style={{ color: 'var(--text-dim)' }}>Monitor</div>
+        {monitor.map((item) => <NavItem key={item.href} item={item} active={pathname === item.href} />)}
       </nav>
-      <div className="p-4 border-t border-[var(--border)] text-xs" style={{ color: 'var(--text-dim)' }}>
+
+      {/* Version */}
+      <div className="px-6 py-4 text-[11px]" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border)' }}>
         v2.0.0
       </div>
     </aside>
+  )
+}
+
+function NavItem({ item, active }: { item: { href: string; label: string; icon: string }; active: boolean }) {
+  return (
+    <Link
+      href={item.href}
+      className="flex items-center gap-3 px-3 py-[8px] rounded-lg text-[13px] transition-all mb-[2px]"
+      style={{
+        background: active ? 'var(--accent-light, #eeedfc)' : 'transparent',
+        color: active ? 'var(--accent)' : 'var(--text-secondary)',
+        fontWeight: active ? 500 : 400,
+      }}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: active ? 1 : 0.5 }}>
+        <path d={item.icon} />
+      </svg>
+      {item.label}
+    </Link>
   )
 }

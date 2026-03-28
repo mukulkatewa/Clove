@@ -58,8 +58,8 @@ export default function OpenClawPage() {
     <div>
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h2 className="text-2xl font-semibold">OpenClaw</h2>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-dim)' }}>
+          <h2 style={{ fontSize: 24, fontWeight: 600, color: 'var(--text)' }}>OpenClaw</h2>
+          <p style={{ fontSize: 14, marginTop: 4, color: 'var(--text-secondary)' }}>
             Spawn OpenClaw instances inside CLOVE sandbox. Each gets its own SOUL, budget, and permissions.
           </p>
         </div>
@@ -67,16 +67,29 @@ export default function OpenClawPage() {
           {running.length > 0 && (
             <button
               onClick={handleStopAll}
-              className="px-4 py-2 rounded-md text-xs font-semibold"
-              style={{ border: '1px solid var(--red)', color: 'var(--red)' }}
+              style={{
+                padding: '8px 16px',
+                borderRadius: 12,
+                fontSize: 12,
+                fontWeight: 600,
+                border: '1px solid var(--red)',
+                color: 'var(--red)',
+                background: 'var(--red-light)',
+              }}
             >
               Stop All
             </button>
           )}
           <button
             onClick={() => setShowForm(!showForm)}
-            className="px-4 py-2 rounded-md text-xs font-semibold"
-            style={{ background: 'var(--accent)', color: '#000' }}
+            style={{
+              padding: '8px 16px',
+              borderRadius: 12,
+              fontSize: 12,
+              fontWeight: 600,
+              background: 'var(--accent)',
+              color: '#fff',
+            }}
           >
             + Spawn Agent
           </button>
@@ -85,70 +98,67 @@ export default function OpenClawPage() {
 
       {/* Spawn form */}
       {showForm && (
-        <div
-          className="border rounded-lg p-5 mb-6"
-          style={{ borderColor: 'var(--accent)', background: 'var(--bg-card)' }}
-        >
+        <div className="card" style={{ padding: 20, marginBottom: 24, borderColor: 'var(--accent)' }}>
           <div className="grid grid-cols-2 gap-4 mb-4">
             <div>
-              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-dim)' }}>Name</label>
+              <label className="block" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 6 }}>Name</label>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="researcher"
-                className="w-full rounded-md px-3 py-2 text-sm outline-none placeholder:opacity-20"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                className="w-full text-sm outline-none placeholder:opacity-20"
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 12px', color: 'var(--text)' }}
               />
             </div>
             <div>
-              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-dim)' }}>Budget (USD)</label>
+              <label className="block" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 6 }}>Budget (USD)</label>
               <input
                 type="number"
                 value={budget}
                 onChange={(e) => setBudget(parseFloat(e.target.value) || 10)}
-                className="w-full rounded-md px-3 py-2 text-sm mono outline-none"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--accent)' }}
+                className="w-full mono text-sm outline-none"
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 12px', color: 'var(--accent)' }}
               />
             </div>
           </div>
           <div className="mb-4">
-            <label className="block text-xs mb-1.5" style={{ color: 'var(--text-dim)' }}>SOUL (personality)</label>
+            <label className="block" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 6 }}>SOUL (personality)</label>
             <textarea
               value={soul}
               onChange={(e) => setSoul(e.target.value)}
               placeholder="You are a research assistant. You find information and summarize clearly."
               rows={2}
-              className="w-full rounded-md px-3 py-2 text-sm resize-none outline-none placeholder:opacity-20"
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              className="w-full text-sm resize-none outline-none placeholder:opacity-20"
+              style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 12px', color: 'var(--text)' }}
             />
           </div>
           <div className="grid grid-cols-2 gap-4 mb-4">
             <div>
-              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-dim)' }}>Channels (comma-separated)</label>
+              <label className="block" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 6 }}>Channels (comma-separated)</label>
               <input
                 value={channels}
                 onChange={(e) => setChannels(e.target.value)}
                 placeholder="slack, telegram"
-                className="w-full rounded-md px-3 py-2 text-sm outline-none placeholder:opacity-20"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                className="w-full text-sm outline-none placeholder:opacity-20"
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 12px', color: 'var(--text)' }}
               />
             </div>
             <div>
-              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-dim)' }}>Skills (comma-separated)</label>
+              <label className="block" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 6 }}>Skills (comma-separated)</label>
               <input
                 value={skills}
                 onChange={(e) => setSkills(e.target.value)}
                 placeholder="research, web, coding"
-                className="w-full rounded-md px-3 py-2 text-sm outline-none placeholder:opacity-20"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                className="w-full text-sm outline-none placeholder:opacity-20"
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '8px 12px', color: 'var(--text)' }}
               />
             </div>
           </div>
           <button
             onClick={handleSpawn}
             disabled={spawning || !name.trim()}
-            className="px-6 py-2 rounded-md text-sm font-semibold disabled:opacity-30"
-            style={{ background: 'var(--accent)', color: '#000' }}
+            className="text-sm font-semibold disabled:opacity-30"
+            style={{ background: 'var(--accent)', color: '#fff', borderRadius: 12, padding: '8px 24px' }}
           >
             {spawning ? 'Spawning...' : 'Spawn'}
           </button>
@@ -157,13 +167,10 @@ export default function OpenClawPage() {
 
       {/* Instances */}
       {instances.length === 0 ? (
-        <div
-          className="border rounded-lg p-12 text-center"
-          style={{ borderColor: 'var(--border)', background: 'var(--bg-card)' }}
-        >
-          <div className="text-3xl mb-2" style={{ color: 'var(--text-dim)' }}>@</div>
+        <div className="card" style={{ padding: 48, textAlign: 'center' }}>
+          <div style={{ fontSize: 30, marginBottom: 8, color: 'var(--text-dim)' }}>@</div>
           <p style={{ color: 'var(--text-dim)' }}>No OpenClaw instances running.</p>
-          <p className="text-xs mt-2" style={{ color: 'var(--text-dim)' }}>
+          <p style={{ fontSize: 12, marginTop: 8, color: 'var(--text-dim)' }}>
             Click &quot;+ Spawn Agent&quot; to create one.
           </p>
         </div>
@@ -172,21 +179,23 @@ export default function OpenClawPage() {
           {instances.map((inst) => (
             <div
               key={inst.id}
-              className="border rounded-lg p-5"
+              className="card"
               style={{
-                borderColor: inst.state === 'running' ? 'var(--green)' : 'var(--border)',
-                borderLeftWidth: 3,
-                background: 'var(--bg-card)',
+                padding: 20,
+                borderLeft: `3px solid ${inst.state === 'running' ? 'var(--green)' : 'var(--border)'}`,
               }}
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg font-semibold">{inst.name}</span>
+                  <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>{inst.name}</span>
                   <span
-                    className="text-xs px-2 py-0.5 rounded"
                     style={{
-                      background: inst.state === 'running' ? 'var(--green)' : 'var(--red)',
-                      color: '#000',
+                      fontSize: 12,
+                      padding: '2px 8px',
+                      borderRadius: 8,
+                      fontWeight: 500,
+                      background: inst.state === 'running' ? 'var(--green-light)' : 'var(--red-light)',
+                      color: inst.state === 'running' ? 'var(--green)' : 'var(--red)',
                     }}
                   >
                     {inst.state}
@@ -195,14 +204,20 @@ export default function OpenClawPage() {
                 {inst.state === 'running' && (
                   <button
                     onClick={() => handleStop(inst.id)}
-                    className="text-xs px-3 py-1 rounded"
-                    style={{ border: '1px solid var(--red)', color: 'var(--red)' }}
+                    style={{
+                      fontSize: 12,
+                      padding: '4px 12px',
+                      borderRadius: 12,
+                      border: '1px solid var(--red)',
+                      color: 'var(--red)',
+                      background: 'var(--red-light)',
+                    }}
                   >
                     Stop
                   </button>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs" style={{ color: 'var(--text-dim)' }}>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
                 <div>ID: <span className="mono" style={{ color: 'var(--text)' }}>{inst.id}</span></div>
                 <div>PID: <span className="mono" style={{ color: 'var(--text)' }}>{inst.pid}</span></div>
                 <div>Port: <span className="mono" style={{ color: 'var(--text)' }}>{inst.port}</span></div>
@@ -216,7 +231,7 @@ export default function OpenClawPage() {
                   <div>Channels: <span style={{ color: 'var(--text)' }}>{inst.channels.join(', ')}</span></div>
                 )}
               </div>
-              <div className="text-xs mt-2" style={{ color: 'var(--text-dim)' }}>
+              <div style={{ fontSize: 12, marginTop: 8, color: 'var(--text-dim)' }}>
                 Started {new Date(inst.started_at_ms).toLocaleString()}
               </div>
             </div>
