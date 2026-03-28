@@ -26,7 +26,7 @@ export function Sidebar() {
       {/* Logo */}
       <div className="px-6 pt-6 pb-5">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, var(--accent), #7c3aed)' }}>
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #e07628, #f59e0b)' }}>
             <span className="text-white text-[13px] font-bold">C</span>
           </div>
           <div>

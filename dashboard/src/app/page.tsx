@@ -63,7 +63,7 @@ export default function Overview() {
       {/* Hero card + stats */}
       <div className="grid grid-cols-3 gap-4 mb-8">
         {/* Hero kernel card */}
-        <div className="rounded-2xl p-6 text-white relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #5046e5 0%, #7c3aed 50%, #a855f7 100%)' }}>
+        <div className="rounded-2xl p-6 text-white relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #e07628 0%, #f59e0b 50%, #fbbf24 100%)' }}>
           <div className="absolute top-0 right-0 w-32 h-32 rounded-full opacity-10" style={{ background: 'white', transform: 'translate(30%, -30%)' }} />
           <div className="text-[11px] uppercase tracking-[0.08em] opacity-70 mb-1">Kernel</div>
           <div className="text-[28px] font-bold tracking-[-0.03em]">v{health?.version || '2.0.0'}</div>
