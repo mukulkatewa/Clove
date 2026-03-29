@@ -1,0 +1,29 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "code-reviewer"
+  displayName: "Code Reviewer"
+  description: "Reviews code for security, performance, readability, and bugs with actionable feedback."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["code-review", "security", "quality"]
+
+spec:
+  mode: "single"
+  goal: "Review code in '{{file_path}}'. Focus: {{focus}}. For each issue: severity, line reference, description, suggested fix. End with top 3 priorities."
+  budget: 0.40
+  max_steps: 10
+  tools: ["read_file", "exec"]
+  agent_name: "reviewer"
+
+parameters:
+  - name: "file_path"
+    type: "string"
+    label: "File or Directory"
+    required: true
+  - name: "focus"
+    type: "select"
+    label: "Focus"
+    options: ["security", "performance", "readability", "bugs", "all"]
+    default: "all"

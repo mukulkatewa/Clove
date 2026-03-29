@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "templates": [
+    { "name": "research-digest", "displayName": "Research Digest", "category": "research", "description": "Researches any topic and produces a structured digest.", "path": "consumer/research-digest.yaml", "mode": "single", "consumer": true },
+    { "name": "content-writer", "displayName": "Content Writer", "category": "writing", "description": "Writes polished content — blog posts, emails, reports.", "path": "consumer/content-writer.yaml", "mode": "single", "consumer": true },
+    { "name": "site-monitor", "displayName": "Site Monitor", "category": "monitoring", "description": "Checks website health, SSL, response time.", "path": "consumer/site-monitor.yaml", "mode": "single", "consumer": true },
+    { "name": "data-analyzer", "displayName": "Data Analyzer", "category": "data", "description": "Analyzes data files, finds patterns, answers questions.", "path": "consumer/data-analyzer.yaml", "mode": "single", "consumer": true },
+    { "name": "competitor-tracker", "displayName": "Competitor Tracker", "category": "research", "description": "Fleet researches competitors in parallel.", "path": "consumer/competitor-tracker.yaml", "mode": "fleet", "consumer": true },
+    { "name": "meeting-prep", "displayName": "Meeting Prep", "category": "writing", "description": "Prepares briefing docs with talking points.", "path": "consumer/meeting-prep.yaml", "mode": "single", "consumer": true },
+    { "name": "api-tester", "displayName": "API Tester", "category": "dev", "description": "Tests API endpoints with edge cases.", "path": "developer/api-tester.yaml", "mode": "single", "consumer": false },
+    { "name": "code-reviewer", "displayName": "Code Reviewer", "category": "dev", "description": "Reviews code for security, performance, bugs.", "path": "developer/code-reviewer.yaml", "mode": "single", "consumer": false },
+    { "name": "doc-generator", "displayName": "Doc Generator", "category": "dev", "description": "Fleet generates project documentation.", "path": "developer/doc-generator.yaml", "mode": "fleet", "consumer": false },
+    { "name": "dep-auditor", "displayName": "Dependency Auditor", "category": "dev", "description": "Audits dependencies for vulnerabilities.", "path": "developer/dep-auditor.yaml", "mode": "single", "consumer": false }
+  ]
+}

@@ -1,0 +1,29 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "doc-generator"
+  displayName: "Doc Generator"
+  description: "Fleet of agents that reads your codebase and generates documentation."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["documentation", "fleet", "api-docs"]
+
+spec:
+  mode: "fleet"
+  goal: "Generate a {{doc_type}} for the project at '{{project_path}}'. Read source code, understand architecture, produce comprehensive documentation."
+  budget: 1.50
+  max_steps: 20
+  tools: ["read_file", "exec", "write_file"]
+  agents: 3
+
+parameters:
+  - name: "project_path"
+    type: "string"
+    label: "Project Path"
+    required: true
+  - name: "doc_type"
+    type: "select"
+    label: "Doc Type"
+    options: ["API reference", "README", "architecture overview", "getting started guide"]
+    default: "README"

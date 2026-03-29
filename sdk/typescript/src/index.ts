@@ -15,6 +15,8 @@ export {
 } from "./protocol.js";
 
 export { CloveClient } from "./client.js";
+export { Agent, type AgentOptions } from "./agent.js";
+export { resolveTemplate, validateParams, getDefaults, type AgentTemplate, type TemplateSpec, type TemplateParameter, type RunRequest, type FleetRequest } from "./template.js";
 
 export type {
   KernelResponse,

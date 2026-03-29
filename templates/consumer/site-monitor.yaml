@@ -1,0 +1,30 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "site-monitor"
+  displayName: "Site Monitor"
+  description: "Checks a website for uptime, response time, SSL status, and content changes. Ideal for scheduling."
+  category: "monitoring"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["monitoring", "uptime", "ssl", "health-check"]
+
+spec:
+  mode: "single"
+  goal: "Monitor {{url}}. Check: {{checks}}. Report status, response time, issues found, SSL expiry if applicable."
+  budget: 0.10
+  max_steps: 8
+  tools: ["http", "exec"]
+  agent_name: "monitor"
+
+parameters:
+  - name: "url"
+    type: "string"
+    label: "Website URL"
+    placeholder: "https://example.com"
+    required: true
+  - name: "checks"
+    type: "select"
+    label: "Check Type"
+    options: ["uptime + response time", "SSL certificate", "content changes", "full health check"]
+    default: "full health check"

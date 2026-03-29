@@ -1,0 +1,35 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "content-writer"
+  displayName: "Content Writer"
+  description: "Writes polished, publish-ready content — blog posts, emails, reports, or social threads."
+  category: "writing"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["writing", "content", "copywriting"]
+
+spec:
+  mode: "single"
+  goal: "Write a {{format}} about '{{subject}}' in a {{tone}} tone. Research the topic first for accuracy. Produce polished, publish-ready content."
+  budget: 0.40
+  max_steps: 12
+  tools: ["search", "http", "write_file"]
+  agent_name: "writer"
+
+parameters:
+  - name: "subject"
+    type: "string"
+    label: "Subject"
+    placeholder: "e.g., the future of remote work"
+    required: true
+  - name: "format"
+    type: "select"
+    label: "Format"
+    options: ["blog post", "email", "report", "social thread", "newsletter"]
+    default: "blog post"
+  - name: "tone"
+    type: "select"
+    label: "Tone"
+    options: ["professional", "casual", "academic", "conversational"]
+    default: "professional"

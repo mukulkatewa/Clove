@@ -1,0 +1,32 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "api-tester"
+  displayName: "API Tester"
+  description: "Tests an API endpoint with edge cases — status codes, response times, error handling."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["api", "testing", "qa"]
+
+spec:
+  mode: "single"
+  goal: "Test {{method}} {{endpoint_url}}. Run: happy path, missing fields, invalid types, empty payload, large payload, auth edge cases. Report pass/fail for each. {{payload}}"
+  budget: 0.30
+  max_steps: 15
+  tools: ["http", "exec", "write_file"]
+  agent_name: "api-tester"
+
+parameters:
+  - name: "endpoint_url"
+    type: "string"
+    label: "Endpoint URL"
+    required: true
+  - name: "method"
+    type: "select"
+    label: "Method"
+    options: ["GET", "POST", "PUT", "PATCH", "DELETE"]
+    default: "GET"
+  - name: "payload"
+    type: "textarea"
+    label: "Sample Payload (optional)"

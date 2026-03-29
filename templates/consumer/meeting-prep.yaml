@@ -1,0 +1,31 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "meeting-prep"
+  displayName: "Meeting Prep"
+  description: "Prepares briefing documents with talking points, background research, and potential questions."
+  category: "writing"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["meetings", "preparation", "briefing"]
+
+spec:
+  mode: "single"
+  goal: "Prepare a briefing for a meeting about '{{topic}}'. Attendees: {{attendees}}. Context: {{context}}. Include talking points, potential questions with answers, and background."
+  budget: 0.35
+  max_steps: 10
+  tools: ["search", "http", "write_file"]
+  agent_name: "prep-agent"
+
+parameters:
+  - name: "topic"
+    type: "string"
+    label: "Meeting Topic"
+    required: true
+  - name: "attendees"
+    type: "string"
+    label: "Attendees"
+    placeholder: "Engineering leads, PM team"
+  - name: "context"
+    type: "textarea"
+    label: "Additional Context"

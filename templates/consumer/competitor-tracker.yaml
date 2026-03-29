@@ -1,0 +1,30 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "competitor-tracker"
+  displayName: "Competitor Tracker"
+  description: "Fleet of agents researching your company and competitors in parallel — pricing, news, positioning."
+  category: "research"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["competitors", "market-research", "fleet"]
+
+spec:
+  mode: "fleet"
+  goal: "Research {{company}} and competitors ({{competitors}}). For each: product, news, pricing, differentiators, positioning. Produce comparison matrix."
+  budget: 1.50
+  max_steps: 20
+  tools: ["search", "http", "remember", "recall"]
+  agents: 3
+
+parameters:
+  - name: "company"
+    type: "string"
+    label: "Your Company"
+    placeholder: "e.g., Acme Corp"
+    required: true
+  - name: "competitors"
+    type: "textarea"
+    label: "Competitors"
+    placeholder: "Competitor A, Competitor B, Competitor C"
+    required: true

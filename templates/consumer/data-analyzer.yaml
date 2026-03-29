@@ -1,0 +1,30 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "data-analyzer"
+  displayName: "Data Analyzer"
+  description: "Analyzes data from a file or URL — answers questions, finds patterns, produces statistical insights."
+  category: "data"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["data", "analysis", "statistics"]
+
+spec:
+  mode: "single"
+  goal: "Analyze the data at '{{data_source}}'. Answer: {{question}}. Provide statistical insights, patterns, and a summary."
+  budget: 0.60
+  max_steps: 15
+  tools: ["read_file", "http", "exec", "write_file"]
+  agent_name: "analyst"
+
+parameters:
+  - name: "data_source"
+    type: "string"
+    label: "Data Source"
+    placeholder: "Path to file or URL"
+    required: true
+  - name: "question"
+    type: "textarea"
+    label: "Question"
+    placeholder: "What trends do you see in the sales data?"
+    required: true

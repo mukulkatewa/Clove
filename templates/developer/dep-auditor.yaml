@@ -1,0 +1,24 @@
+apiVersion: clove/v1
+kind: AgentTemplate
+metadata:
+  name: "dep-auditor"
+  displayName: "Dependency Auditor"
+  description: "Audits dependencies for outdated packages, vulnerabilities, license issues, and unused deps."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["dependencies", "security", "audit"]
+
+spec:
+  mode: "single"
+  goal: "Audit dependencies at '{{project_path}}'. Check: outdated packages, CVEs, license issues, unused deps. Produce prioritized report."
+  budget: 0.40
+  max_steps: 12
+  tools: ["read_file", "exec", "http"]
+  agent_name: "auditor"
+
+parameters:
+  - name: "project_path"
+    type: "string"
+    label: "Project Path"
+    required: true
