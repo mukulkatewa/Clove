@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from clove_sdk.client import CloveClient
 
@@ -24,11 +24,18 @@ class Agent:
     """
 
     def __init__(
-        self, name: str, socket_path: str = "/tmp/clove.sock"
+        self,
+        name: str,
+        role: str = "",
+        socket_path: str = "/tmp/clove.sock",
+        poll_interval: float = 0.1,
     ) -> None:
         self.name = name
+        self.role = role
         self.client = CloveClient(socket_path)
+        self.poll_interval = poll_interval
         self._tools: dict[str, Callable] = {}
+        self._running = False
 
     # ── Tool registration ───────────────────────────────────────────
 
@@ -37,41 +44,77 @@ class Agent:
         self._tools[func.__name__] = func
         return func
 
+    def get_tools(self) -> list[str]:
+        return list(self._tools.keys())
+
+    def call_tool(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        fn = self._tools.get(name)
+        if fn is None:
+            raise ValueError(f"Unknown tool: {name}")
+        return fn(*args, **kwargs)
+
     # ── Event loop ──────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Connect, register, and enter the main event loop.
-
-        Polls for IPC messages and events. Stops on ``KeyboardInterrupt``.
-        """
         self.client.connect()
         self.client.register_name(self.name)
         self.client.hello()
+        self._running = True
 
         try:
-            while True:
+            while self._running:
                 msgs = self.client.recv_messages(max_count=10)
                 for msg in msgs:
-                    self._handle_message(msg)
+                    self.on_message(msg)
 
                 events = self.client.poll_events(max_events=10)
                 for event in events:
-                    self._handle_event(event)
+                    self.on_event(event)
 
-                time.sleep(0.1)
+                self.on_tick()
+                time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             pass
         finally:
+            self._running = False
             self.client.disconnect()
 
-    # ── Overridable handlers ────────────────────────────────────────
+    def stop(self) -> None:
+        self._running = False
 
-    def _handle_message(self, msg: dict) -> None:
-        """Process an incoming IPC message.
+    # ── Convenience methods ─────────────────────────────────────────
 
-        Override in a subclass or use the ``@agent.tool`` decorator to
-        register named handlers.
-        """
+    def think(self, prompt: str) -> dict:
+        return self.client.think(prompt)
 
-    def _handle_event(self, event: dict) -> None:
-        """Process an incoming event.  Override in a subclass."""
+    def store(self, key: str, value: Any) -> dict:
+        return self.client.store(key, value)
+
+    def fetch(self, key: str) -> Any:
+        return self.client.fetch(key)
+
+    def emit(self, event_type: str, data: dict | None = None) -> dict:
+        return self.client.emit(event_type, data or {})
+
+    def send_to(self, agent_id: int, content: str) -> dict:
+        return self.client.send_message(agent_id, content)
+
+    def broadcast(self, content: str) -> dict:
+        return self.client.broadcast(content)
+
+    def remember(self, name: str, content: str, block_type: str = "recall") -> dict:
+        return self.client.mem_create(name, content, block_type=block_type)
+
+    def recall(self, query: str, top_k: int = 5) -> list:
+        return self.client.mem_search(query, top_k=top_k)
+
+    # ── Override points ─────────────────────────────────────────────
+
+    def on_message(self, msg: dict) -> None:
+        """Called for each incoming IPC message. Override in subclass."""
+
+    def on_event(self, event: dict) -> None:
+        """Called for each incoming event. Override in subclass."""
+
+    def on_tick(self) -> None:
+        """Called every polling cycle. Override for periodic work."""
