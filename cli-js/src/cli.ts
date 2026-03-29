@@ -14,16 +14,22 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
 const CLOVE_DIR = join(homedir(), '.clove')
 const PID_FILE = join(CLOVE_DIR, 'kernel.pid')
+const SCHEDULER_PID = join(CLOVE_DIR, 'scheduler.pid')
+const SCHEDULER_STATE = join(CLOVE_DIR, 'scheduler-state.json')
 const CONFIG_FILE = join(CLOVE_DIR, 'config.json')
+const USER_AGENTS = join(CLOVE_DIR, 'agents')
 const DEFAULT_PORT = 8080
+const __cli_dir = dirname(fileURLToPath(import.meta.url))
+const TEMPLATES_DIR = join(__cli_dir, '..', '..', 'templates')
 
 interface CloveConfig {
   kernelPath: string
@@ -404,6 +410,129 @@ async function cmdConfig(args: string[]): Promise<void> {
   console.log('Usage: clove config [set <key> <value> | get <key>]')
 }
 
+// ── Templates ──────────────────────────────────────────────────────────
+
+function loadRegistry(): Array<{ name: string; displayName: string; category: string; description: string; path: string; mode: string }> {
+  const p = join(TEMPLATES_DIR, 'registry.json')
+  if (existsSync(p)) { try { return JSON.parse(readFileSync(p, 'utf-8')).templates || [] } catch {} }
+  return []
+}
+
+async function cmdTemplates(): Promise<void> {
+  const reg = loadRegistry()
+  const user: string[] = []
+  if (existsSync(USER_AGENTS)) for (const d of readdirSync(USER_AGENTS)) { if (existsSync(join(USER_AGENTS, d, 'agent.yaml'))) user.push(d) }
+  if (!reg.length && !user.length) { console.log(c.dim('No templates found.')); return }
+  console.log(''); console.log(c.bold('  Agent Templates'))
+  console.log(c.dim('  ─────────────────────────────────────────────'))
+  for (const t of reg) {
+    const mode = t.mode === 'fleet' ? c.yellow('fleet') : c.dim('single')
+    console.log(`  ${c.cyan(t.name.padEnd(22))} ${c.dim(t.category.padEnd(12))} ${mode}  ${t.description.slice(0, 50)}`)
+  }
+  if (user.length) { console.log(''); console.log(c.dim('  User:')); for (const n of user) console.log(`  ${c.cyan(n)}`) }
+  console.log(''); console.log(c.dim('  Deploy: clove deploy <name> --param topic="AI agents"')); console.log('')
+}
+
+async function cmdCreate(name: string): Promise<void> {
+  if (!name) { console.log('Usage: clove create <agent-name>'); return }
+  const dir = join(USER_AGENTS, name); mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'agent.yaml'), `apiVersion: clove/v1\nkind: AgentTemplate\nmetadata:\n  name: "${name}"\n  displayName: "${name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}"\n  description: "Describe what this agent does."\n  category: "dev"\n  author: "user"\n  version: "1.0.0"\n  tags: []\n\nspec:\n  mode: "single"\n  goal: "{{goal}}"\n  budget: 0.50\n  max_steps: 15\n  tools: ["search", "http", "read_file", "write_file", "exec"]\n\nparameters:\n  - name: "goal"\n    type: "string"\n    label: "Goal"\n    required: true\n`)
+  console.log(c.green(`Created: ${join(dir, 'agent.yaml')}`))
+  console.log(c.dim('  Edit the YAML, then: clove deploy ' + name))
+}
+
+function findTpl(name: string): string | null {
+  const u = join(USER_AGENTS, name, 'agent.yaml'); if (existsSync(u)) return u
+  const reg = loadRegistry(); const e = reg.find(t => t.name === name)
+  if (e) { const p = join(TEMPLATES_DIR, e.path); if (existsSync(p)) return p }
+  if (existsSync(name)) return name
+  return null
+}
+
+function parseYaml(text: string): Record<string, unknown> {
+  const lines = text.split('\n'); const result: Record<string, unknown> = {}
+  const stack: Array<{ obj: Record<string, unknown>; indent: number }> = [{ obj: result, indent: -1 }]
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, ''); if (!line.trim() || line.trim().startsWith('#')) continue
+    const indent = line.search(/\S/); const content = line.trim()
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop()
+    const cur = stack[stack.length - 1].obj
+    if (content.startsWith('- ')) { const pk = Object.keys(cur).pop(); if (pk && Array.isArray(cur[pk])) { const item = content.slice(2).trim(); if (item.includes(': ')) { const o: Record<string, unknown> = {}; const ci = item.indexOf(': '); o[item.slice(0, ci).trim().replace(/^["']|["']$/g, '')] = pv(item.slice(ci + 2).trim()); (cur[pk] as unknown[]).push(o); stack.push({ obj: o, indent: indent + 2 }) } else { (cur[pk] as unknown[]).push(pv(item)) } }; continue }
+    const ci = content.indexOf(': ')
+    if (ci > 0 || content.endsWith(':')) {
+      const key = content.slice(0, ci > 0 ? ci : content.length - 1).trim().replace(/^["']|["']$/g, '')
+      const rv = ci > 0 ? content.slice(ci + 2).trim() : ''
+      if (!rv) { const nl = lines[i + 1] || ''; if (nl.trim().startsWith('- ')) cur[key] = []; else { const o: Record<string, unknown> = {}; cur[key] = o; stack.push({ obj: o, indent }) } }
+      else if (rv.startsWith('[') && rv.endsWith(']')) cur[key] = rv.slice(1, -1).split(',').map(s => pv(s.trim())).filter(v => v !== '')
+      else cur[key] = pv(rv)
+    }
+  }
+  return result
+}
+function pv(r: string): unknown { if (!r) return ''; if ((r[0]==='"'&&r.at(-1)==='"')||(r[0]==="'"&&r.at(-1)==="'")) return r.slice(1,-1); if (r==='true') return true; if (r==='false') return false; if (/^-?\d+(\.\d+)?$/.test(r)) return Number(r); return r }
+
+async function cmdDeploy(name: string, cliArgs: string[]): Promise<void> {
+  if (!name) { console.log('Usage: clove deploy <name> [--param key=value ...]'); return }
+  const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.') + c.dim(' clove start')); return }
+  const path = findTpl(name); if (!path) { console.log(c.red(`Template not found: ${name}`)); return }
+  const tpl = parseYaml(readFileSync(path, 'utf-8'))
+  const spec = tpl.spec as Record<string, unknown> || {}; const params: Record<string, string> = {}
+  for (let i = 0; i < cliArgs.length; i++) { if (cliArgs[i] === '--param' && cliArgs[i+1]) { const eq = cliArgs[i+1].indexOf('='); if (eq > 0) params[cliArgs[i+1].slice(0, eq)] = cliArgs[i+1].slice(eq+1); i++ } }
+  let goal = String(spec.goal || '').replace(/\{\{(\w+)\}\}/g, (_, k) => params[k] || '')
+  const budget = (spec.budget as number) || 0.5
+  const meta = tpl.metadata as Record<string, unknown> || {}
+  console.log(c.cyan(`Deploying: ${meta.displayName || name}`))
+  console.log(c.dim(`  ${goal.slice(0, 80)}`)); console.log('')
+  if (spec.mode === 'fleet') await cmdFleet(goal, (spec.agents as number) || 3, budget)
+  else await cmdRun(goal, budget)
+}
+
+// ── Scheduler ──────────────────────────────────────────────────────────
+
+function cronMatch(cron: string, now: Date): boolean {
+  const p = cron.trim().split(/\s+/); if (p.length !== 5) return false
+  const f = [now.getMinutes(), now.getHours(), now.getDate(), now.getMonth() + 1, now.getDay()]
+  return p.every((pat, i) => { if (pat === '*') return true; if (pat.startsWith('*/')) { const s = +pat.slice(2); return s > 0 && f[i] % s === 0 }; return pat.split(',').some(v => { if (v.includes('-')) { const [a,b] = v.split('-').map(Number); return f[i] >= a && f[i] <= b }; return +v === f[i] }) })
+}
+
+async function cmdScheduler(): Promise<void> {
+  const cfg = loadConfig(); console.log(c.cyan('Scheduler started'))
+  while (true) {
+    try {
+      // Schedules
+      const sr = await api<{ schedules: Array<{ name: string; cron: string; enabled: boolean; run: Record<string, unknown> }> }>(cfg.apiPort, '/api/schedules')
+      if (sr?.schedules) {
+        const state = existsSync(SCHEDULER_STATE) ? JSON.parse(readFileSync(SCHEDULER_STATE, 'utf-8')) : { fired: {}, lastAudit: 0 }
+        const now = new Date(); const mk = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`
+        for (const s of sr.schedules) {
+          if (!s.enabled) continue; const fk = `${s.name}:${mk}`; if (state.fired[fk]) continue
+          if (cronMatch(s.cron, now)) { console.log(c.yellow(`  Fire: ${s.name}`)); await api(cfg.apiPort, '/api/run', 'POST', s.run); state.fired[fk] = Date.now() }
+        }
+        const keys = Object.keys(state.fired); if (keys.length > 100) for (const k of keys.slice(0, keys.length - 100)) delete state.fired[k]
+        writeFileSync(SCHEDULER_STATE, JSON.stringify(state))
+      }
+      // Webhooks
+      const wr = await api<{ webhooks: Array<{ url: string; events: string[]; enabled: boolean }> }>(cfg.apiPort, '/api/webhooks')
+      if (wr?.webhooks?.filter(w => w.enabled).length) {
+        const state = JSON.parse(readFileSync(SCHEDULER_STATE, 'utf-8'))
+        const audit = await api<Array<{ id: number; event_type: string; success: boolean; timestamp: string; details: Record<string, unknown> }>>(cfg.apiPort, '/api/audit?limit=30')
+        if (audit) {
+          const newE = audit.filter(e => e.id > (state.lastAudit || 0))
+          if (newE.length) { state.lastAudit = Math.max(...newE.map(e => e.id)); writeFileSync(SCHEDULER_STATE, JSON.stringify(state)) }
+          for (const e of newE) {
+            const evt = e.event_type === 'RUN_COMPLETE' ? (e.success ? 'run_complete' : 'run_failed') : e.event_type === 'BUDGET_EXCEEDED' ? 'budget_exceeded' : null
+            if (!evt) continue
+            for (const w of wr.webhooks.filter(w => w.enabled && w.events.includes(evt))) {
+              try { await fetch(w.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clove-Event': evt }, body: JSON.stringify({ event: evt, timestamp: e.timestamp, data: e.details }), signal: AbortSignal.timeout(10000) }) } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 60000))
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
@@ -440,6 +569,20 @@ switch (cmd) {
     cmdFleet(goal, n, b)
     break
   }
+  case 'templates':
+  case 'tpl':
+    cmdTemplates()
+    break
+  case 'create':
+    cmdCreate(args[1] || '')
+    break
+  case 'deploy':
+  case 'dep':
+    cmdDeploy(args[1] || '', args.slice(2))
+    break
+  case 'scheduler':
+    cmdScheduler()
+    break
   case 'recall':
   case 'memory':
     cmdRecall()
@@ -474,22 +617,26 @@ ${c.bold('CLOVE')} — AI Agent Fleet OS
 ${c.bold('Usage:')} clove <command> [options]
 
 ${c.bold('Commands:')}
-  ${c.cyan('start')}                    Start kernel + open dashboard
-  ${c.cyan('stop')}                     Stop kernel
-  ${c.cyan('status')}                   Kernel health, agents, cost
-  ${c.cyan('run')} "goal" [--budget N]  Run an agent
-  ${c.cyan('fleet')} "goal" [-n N]      Run N agents in parallel
-  ${c.cyan('recall')}                   Show shared memory
-  ${c.cyan('logs')} [N]                 Recent audit entries
-  ${c.cyan('dashboard')}                Open dashboard in browser
-  ${c.cyan('config')} [set k v | get k] View/edit configuration
+  ${c.cyan('start')}                        Start kernel + dashboard
+  ${c.cyan('stop')}                         Stop kernel
+  ${c.cyan('status')}                       Health, agents, cost
+  ${c.cyan('run')} "goal" [--budget N]      Run an agent
+  ${c.cyan('fleet')} "goal" [-n N]          Run N agents in parallel
+  ${c.cyan('templates')}                    List agent templates
+  ${c.cyan('create')} <name>               Scaffold new template
+  ${c.cyan('deploy')} <name> [--param k=v] Deploy a template
+  ${c.cyan('recall')}                      Show shared memory
+  ${c.cyan('logs')} [N]                    Recent audit entries
+  ${c.cyan('dashboard')}                   Open dashboard
+  ${c.cyan('config')} [set k v | get k]    Configuration
 
 ${c.bold('Examples:')}
   clove start
-  clove run "Research the top 5 AI companies in 2026"
+  clove run "Research the top 5 AI companies"
   clove fleet "Compare Rust, Go, and Python" -n 3
-  clove recall
-  clove logs 50
+  clove templates
+  clove deploy research-digest --param topic="AI agents"
+  clove create my-agent
 
 ${c.bold('Shortcuts:')} s=status, r=run, f=fleet, d=dashboard, c=config
 `)
