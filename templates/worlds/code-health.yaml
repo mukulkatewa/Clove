@@ -1,0 +1,46 @@
+apiVersion: clove/v1
+kind: WorldTemplate
+metadata:
+  name: "code-health"
+  displayName: "Code Health Check"
+  description: "3 agents review a project for security, dependencies, and code quality — then synthesize into one report."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["code-review", "security", "quality", "world"]
+
+world:
+  name: "code-health-{{timestamp}}"
+  auto_destroy: true
+
+agents:
+  - name: "security-scanner"
+    role: "Find security vulnerabilities — hardcoded secrets, injection, XSS, auth issues."
+    tools: ["read_file", "exec"]
+    budget: 0.30
+    max_steps: 10
+
+  - name: "dependency-checker"
+    role: "Check dependencies for outdated packages, vulnerabilities, license issues."
+    tools: ["read_file", "exec"]
+    budget: 0.30
+    max_steps: 10
+
+  - name: "code-quality-reviewer"
+    role: "Review code quality — dead code, duplication, complexity, naming, error handling."
+    tools: ["read_file", "exec"]
+    budget: 0.30
+    max_steps: 10
+
+synthesis:
+  agent_name: "synthesizer"
+  goal: "Merge all agent findings into a structured health report: score (A-F), critical issues, warnings, recommendations, summary."
+  budget: 0.20
+  max_steps: 5
+
+parameters:
+  - name: "project_path"
+    type: "string"
+    label: "Project Path"
+    placeholder: "/path/to/your/project"
+    required: true
