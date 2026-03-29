@@ -1,5 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useDemo } from '@/lib/demo-context'
+import { demoSandboxOverview } from '@/lib/demo-data'
 
 interface AgentOverview {
   id: string
@@ -52,9 +54,11 @@ interface SandboxOverview {
 const API = ''
 
 export default function AgentsPage() {
+  const { isDemo } = useDemo()
   const [data, setData] = useState<SandboxOverview | null>(null)
 
   useEffect(() => {
+    if (isDemo) { setData(demoSandboxOverview() as any); return }
     const load = () => {
       fetch(`${API}/api/sandbox/overview`)
         .then((r) => r.json())
@@ -64,7 +68,7 @@ export default function AgentsPage() {
     load()
     const interval = setInterval(load, 2000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isDemo])
 
   if (!data) {
     return <div className="text-center py-20" style={{ color: 'var(--text-dim)' }}>Loading...</div>

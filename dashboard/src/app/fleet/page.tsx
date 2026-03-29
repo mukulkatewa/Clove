@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { streamFleet } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
 
 interface FleetEvent {
   type: string
@@ -8,6 +9,7 @@ interface FleetEvent {
 }
 
 export default function FleetPage() {
+  const { isDemo } = useDemo()
   const [goal, setGoal] = useState('')
   const [agents, setAgents] = useState(3)
   const [budget, setBudget] = useState(1.0)

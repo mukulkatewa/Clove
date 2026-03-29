@@ -2,8 +2,11 @@
 import { useEffect, useState } from 'react'
 import { getHealth, getCost, getHistory, getOpenClawStatus, getAudit } from '@/lib/api'
 import type { HealthResponse, CostResponse, HistoryEntry, OpenClawInstance, AuditEntry } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoHealth, demoCost, demoRuns, demoOpenClaw, demoAudit } from '@/lib/demo-data'
 
 export default function Overview() {
+  const { isDemo } = useDemo()
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [cost, setCost] = useState<CostResponse | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
@@ -12,6 +15,7 @@ export default function Overview() {
   const [error, setError] = useState('')
 
   useEffect(() => {
+    if (isDemo) { setHealth(demoHealth() as any); setCost(demoCost() as any); setHistory(demoRuns() as any); setInstances(demoOpenClaw() as any); setAudit(demoAudit() as any); setError(''); return }
     const load = () => {
       getHealth().then(setHealth).catch(() => setError('offline'))
       getCost().then(setCost).catch(() => {})
@@ -22,7 +26,7 @@ export default function Overview() {
     load()
     const interval = setInterval(load, 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isDemo])
 
   if (error) {
     return (

@@ -1,6 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useDemo } from '@/lib/demo-context'
 
 const main = [
   { href: '/', label: 'Dashboard', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4' },
@@ -20,6 +21,7 @@ const monitor = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { isDemo, toggle } = useDemo()
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-[240px] flex flex-col z-50" style={{ background: 'var(--bg-card)', borderRight: '1px solid var(--border)' }}>
@@ -45,8 +47,20 @@ export function Sidebar() {
         {monitor.map((item) => <NavItem key={item.href} item={item} active={pathname === item.href} />)}
       </nav>
 
-      {/* Version */}
-      <div className="px-6 py-4 text-[11px]" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border)' }}>
+      {/* Demo toggle + version */}
+      <div className="px-4 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <button
+          onClick={toggle}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px] transition-all"
+          style={{ background: isDemo ? 'var(--yellow-light)' : 'transparent', color: isDemo ? 'var(--yellow)' : 'var(--text-dim)' }}
+        >
+          <span className="font-medium">{isDemo ? 'Exit Demo' : 'Demo Mode'}</span>
+          <div className="w-[30px] h-[16px] rounded-full p-[2px] transition-all" style={{ background: isDemo ? 'var(--yellow)' : 'var(--border)' }}>
+            <div className="w-[12px] h-[12px] rounded-full transition-all" style={{ background: isDemo ? '#fff' : 'var(--text-dim)', transform: isDemo ? 'translateX(14px)' : 'translateX(0)' }} />
+          </div>
+        </button>
+      </div>
+      <div className="px-6 py-3 text-[11px]" style={{ color: 'var(--text-dim)' }}>
         v2.0.0
       </div>
     </aside>

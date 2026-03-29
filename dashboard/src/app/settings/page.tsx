@@ -2,8 +2,11 @@
 import { useEffect, useState } from 'react'
 import { getSchedules, createSchedule, deleteSchedule, getWebhooks, createWebhook, deleteWebhook } from '@/lib/api'
 import type { Schedule, Webhook } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoSchedules, demoWebhooks } from '@/lib/demo-data'
 
 export default function SettingsPage() {
+  const { isDemo } = useDemo()
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [webhooks, setWebhooks] = useState<Webhook[]>([])
 
@@ -23,7 +26,7 @@ export default function SettingsPage() {
     getWebhooks().then((r) => setWebhooks(r.webhooks || [])).catch(() => {})
   }
 
-  useEffect(() => { refresh() }, [])
+  useEffect(() => { if (isDemo) { setSchedules(demoSchedules() as any); setWebhooks(demoWebhooks() as any); return } refresh() }, [isDemo])
 
   const handleCreateSchedule = async () => {
     if (!schName || !schCron || !schGoal) return

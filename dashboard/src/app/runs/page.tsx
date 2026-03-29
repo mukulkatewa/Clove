@@ -2,16 +2,19 @@
 import { useEffect, useState, useRef } from 'react'
 import { submitRun, getHistory } from '@/lib/api'
 import type { RunResponse, HistoryEntry } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoRuns } from '@/lib/demo-data'
 
 const ALL_TOOLS = ['read_file', 'write_file', 'exec', 'http', 'search', 'store', 'fetch', 'remember', 'recall']
 
 export default function RunsPage() {
+  const { isDemo } = useDemo()
   const [goal, setGoal] = useState(''); const [budget, setBudget] = useState(0.5); const [model, setModel] = useState('')
   const [tools, setTools] = useState<string[]>([...ALL_TOOLS]); const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<RunResponse | null>(null); const [history, setHistory] = useState<HistoryEntry[]>([])
   const [elapsed, setElapsed] = useState(0); const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  useEffect(() => { getHistory().then((r) => setHistory(r.runs || [])).catch(() => {}) }, [result])
+  useEffect(() => { if (isDemo) { setHistory(demoRuns() as any); return } getHistory().then((r) => setHistory(r.runs || [])).catch(() => {}) }, [result, isDemo])
 
   const handleSubmit = async () => {
     if (!goal.trim() || loading) return; setLoading(true); setResult(null); setElapsed(0)

@@ -2,19 +2,23 @@
 import { useEffect, useState } from 'react'
 import { getCost, getHistory } from '@/lib/api'
 import type { CostResponse, HistoryEntry } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoCost, demoRuns } from '@/lib/demo-data'
 
 export default function CostPage() {
+  const { isDemo } = useDemo()
   const [cost, setCost] = useState<CostResponse | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
   useEffect(() => {
+    if (isDemo) { setCost(demoCost() as any); setHistory(demoRuns() as any); return }
     getCost().then(setCost).catch(() => {})
     getHistory().then((r) => setHistory(r.runs || [])).catch(() => {})
     const interval = setInterval(() => {
       getCost().then(setCost).catch(() => {})
     }, 3000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isDemo])
 
   const totalCost = cost?.total_cost_usd ?? 0
   const maxCost = cost?.max_cost_usd ?? 0

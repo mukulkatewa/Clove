@@ -2,16 +2,20 @@
 import { useEffect, useState } from 'react'
 import { getAudit } from '@/lib/api'
 import type { AuditEntry } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoAudit } from '@/lib/demo-data'
 
 export default function AuditPage() {
+  const { isDemo } = useDemo()
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [filter, setFilter] = useState('')
 
   useEffect(() => {
+    if (isDemo) { setEntries(demoAudit() as any); return }
     getAudit(200).then(setEntries).catch(() => {})
     const interval = setInterval(() => getAudit(200).then(setEntries).catch(() => {}), 5000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isDemo])
 
   const filtered = filter
     ? entries.filter((e) =>

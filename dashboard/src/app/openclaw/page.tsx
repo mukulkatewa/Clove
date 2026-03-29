@@ -2,8 +2,11 @@
 import { useEffect, useState } from 'react'
 import { getOpenClawStatus, spawnOpenClaw, stopOpenClaw, stopAllOpenClaw } from '@/lib/api'
 import type { OpenClawInstance } from '@/lib/api'
+import { useDemo } from '@/lib/demo-context'
+import { demoOpenClaw } from '@/lib/demo-data'
 
 export default function OpenClawPage() {
+  const { isDemo } = useDemo()
   const [instances, setInstances] = useState<OpenClawInstance[]>([])
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -18,10 +21,11 @@ export default function OpenClawPage() {
   }
 
   useEffect(() => {
+    if (isDemo) { setInstances(demoOpenClaw() as any); return }
     refresh()
     const interval = setInterval(refresh, 3000)
     return () => clearInterval(interval)
-  }, [])
+  }, [isDemo])
 
   const handleSpawn = async () => {
     if (!name.trim()) return
