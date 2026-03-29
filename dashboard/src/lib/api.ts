@@ -164,6 +164,15 @@ export const getMessages = (agentId: number) =>
     `/api/agents/${agentId}/messages`,
   )
 
+// Worlds
+export interface WorldSummary { id: number; name: string; member_count: number; metadata: Record<string, unknown> }
+export const getWorlds = () => fetchAPI<{ worlds: WorldSummary[] }>('/api/worlds')
+export const createWorld = (name: string) => fetchAPI<WorldSummary>('/api/worlds', { method: 'POST', body: JSON.stringify({ name }) })
+export const deleteWorld = (id: number) => fetchAPI<{ success: boolean }>(`/api/worlds/${id}`, { method: 'DELETE' })
+
+// Memory search
+export const searchMemory = (query: string) => fetchAPI<{ blocks: MemoryBlock[] }>(`/api/memory/search?q=${encodeURIComponent(query)}`)
+
 // SSE helpers
 export function streamFleet(req: FleetRequest, onEvent: (event: Record<string, unknown>) => void) {
   fetch(`${API}/api/fleet`, {
