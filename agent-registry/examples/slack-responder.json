@@ -1,0 +1,35 @@
+{
+  "name": "slack-responder",
+  "description": "Responds to support questions in Slack #support channel using knowledge base",
+  "enabled": true,
+  "connections": ["slack"],
+  "triggers": [
+    {
+      "type": "webhook",
+      "source": "slack",
+      "filter": "channel=#support"
+    }
+  ],
+  "action": {
+    "goal": "A support question was received: {{event}}. Search the knowledge base, draft a helpful response. Be concise, professional, and accurate. If unsure, say so.",
+    "tools": ["search", "http", "recall", "remember"],
+    "max_steps": 8
+  },
+  "permissions": {
+    "can_exec": false,
+    "can_read": true,
+    "can_write": false,
+    "can_http": true,
+    "allowed_domains": ["api.slack.com"],
+    "allowed_paths": ["/knowledge-base"]
+  },
+  "budget": {
+    "per_run": 0.10,
+    "daily_max": 5.00,
+    "daily_spent": 0,
+    "last_reset": "2026-03-30"
+  },
+  "memory": ["support-knowledge", "common-questions"],
+  "created_at": "2026-03-30T00:00:00Z",
+  "updated_at": "2026-03-30T00:00:00Z"
+}
