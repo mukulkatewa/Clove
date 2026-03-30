@@ -533,6 +533,241 @@ async function cmdScheduler(): Promise<void> {
   }
 }
 
+// ── Connect ────────────────────────────────────────────────────────────
+
+const CONNECTIONS_FILE = join(CLOVE_DIR, 'connections.json')
+
+function loadConnections(): Array<{ name: string; type: string; command?: string; credentials: Record<string, string>; status: string }> {
+  if (existsSync(CONNECTIONS_FILE)) { try { return JSON.parse(readFileSync(CONNECTIONS_FILE, 'utf-8')).connections || [] } catch {} }
+  return []
+}
+function saveConnections(conns: Array<Record<string, unknown>>): void {
+  writeFileSync(CONNECTIONS_FILE, JSON.stringify({ connections: conns }, null, 2))
+}
+
+const KNOWN_SERVICES: Record<string, { command: string; args: string[]; tokenEnv: string; tokenPrompt: string }> = {
+  github: { command: 'npx', args: ['@modelcontextprotocol/server-github'], tokenEnv: 'GITHUB_TOKEN', tokenPrompt: 'GitHub Personal Access Token' },
+  slack: { command: 'npx', args: ['@modelcontextprotocol/server-slack'], tokenEnv: 'SLACK_BOT_TOKEN', tokenPrompt: 'Slack Bot Token (xoxb-...)' },
+  filesystem: { command: 'npx', args: ['@modelcontextprotocol/server-filesystem', '/tmp'], tokenEnv: '', tokenPrompt: '' },
+  postgres: { command: 'npx', args: ['@modelcontextprotocol/server-postgres'], tokenEnv: 'DATABASE_URL', tokenPrompt: 'PostgreSQL connection string' },
+  notion: { command: 'npx', args: ['@modelcontextprotocol/server-notion'], tokenEnv: 'NOTION_TOKEN', tokenPrompt: 'Notion integration token' },
+  google_drive: { command: 'npx', args: ['@modelcontextprotocol/server-gdrive'], tokenEnv: 'GDRIVE_CREDENTIALS', tokenPrompt: 'Google Drive credentials path' },
+}
+
+async function cmdConnect(args: string[]): Promise<void> {
+  const sub = args[0]
+
+  if (!sub || sub === 'list' || sub === 'ls') {
+    const conns = loadConnections()
+    if (!conns.length) {
+      console.log(''); console.log(c.dim('  No connections. Connect a service:'))
+      console.log(c.dim('  clove connect github'))
+      console.log(c.dim('  clove connect slack'))
+      console.log('')
+      console.log(c.dim('  Available: ' + Object.keys(KNOWN_SERVICES).join(', ')))
+      console.log('')
+      return
+    }
+    console.log(''); console.log(c.bold('  Connections'))
+    console.log(c.dim('  ─────────────────────────────────────'))
+    for (const conn of conns) {
+      const st = conn.status === 'active' ? c.green('active') : c.dim(conn.status)
+      console.log(`  ${c.cyan(conn.name.padEnd(16))} ${st.padEnd(18)} ${c.dim(conn.type)}`)
+    }
+    console.log('')
+    return
+  }
+
+  if (sub === 'remove' || sub === 'rm') {
+    const name = args[1]; if (!name) { console.log('Usage: clove connect remove <name>'); return }
+    const conns = loadConnections().filter(c => c.name !== name)
+    saveConnections(conns)
+    console.log(c.green(`Removed connection: ${name}`))
+    return
+  }
+
+  // Connect a service
+  const service = KNOWN_SERVICES[sub]
+  if (!service) {
+    console.log(c.red(`Unknown service: ${sub}`))
+    console.log(c.dim('  Available: ' + Object.keys(KNOWN_SERVICES).join(', ')))
+    console.log(c.dim('  Or: clove connect add <name> --type mcp --command "npx @some/server"'))
+    return
+  }
+
+  // Check for token
+  let token = ''
+  if (service.tokenEnv) {
+    token = process.env[service.tokenEnv] || ''
+    if (!token && args[1]) token = args[1]
+    if (!token) {
+      console.log(c.yellow(`  ${service.tokenPrompt} required.`))
+      console.log(c.dim(`  Set it: export ${service.tokenEnv}=your-token`))
+      console.log(c.dim(`  Or:     clove connect ${sub} <token>`))
+      return
+    }
+  }
+
+  // Save connection
+  const conns = loadConnections().filter(c => c.name !== sub)
+  const newConn: Record<string, unknown> = {
+    name: sub,
+    type: 'mcp',
+    command: service.command,
+    args: service.args,
+    credentials: token ? { [service.tokenEnv]: token } : {},
+    status: 'active',
+  }
+  conns.push(newConn as never)
+  saveConnections(conns)
+
+  // Also add to MCP config
+  const mcpPath = join(CLOVE_DIR, 'mcp.yaml')
+  let mcpContent = existsSync(mcpPath) ? readFileSync(mcpPath, 'utf-8') : 'servers:\n'
+  if (!mcpContent.includes(`name: "${sub}"`)) {
+    mcpContent += `  - name: "${sub}"\n    command: ${service.command}\n    args: [${service.args.map(a => `"${a}"`).join(', ')}]\n`
+    if (token) mcpContent += `    env:\n      ${service.tokenEnv}: "${token}"\n`
+    writeFileSync(mcpPath, mcpContent)
+  }
+
+  console.log(c.green(`  Connected: ${sub}`))
+  console.log(c.dim(`  MCP server config saved to ~/.clove/mcp.yaml`))
+  console.log(c.dim(`  Restart kernel to activate: clove stop && clove start`))
+}
+
+// ── Agent Management ──────────────────────────────────────────────────
+
+const REGISTRY_PORT = 8090
+
+async function cmdAgent(args: string[]): Promise<void> {
+  const sub = args[0] || 'list'
+
+  if (sub === 'list' || sub === 'ls') {
+    // Try registry first, fall back to local files
+    const agents = loadLocalAgents()
+    if (!agents.length) {
+      console.log(''); console.log(c.dim('  No agents defined.'))
+      console.log(c.dim('  Create one: clove agent create <name>'))
+      console.log(''); return
+    }
+    console.log(''); console.log(c.bold('  Agents'))
+    console.log(c.dim('  ─────────────────────────────────────────────'))
+    for (const a of agents) {
+      const status = a.enabled ? c.green('enabled') : c.dim('disabled')
+      const triggers = (a.triggers || []).map((t: Record<string, unknown>) => t.type).join(', ') || c.dim('manual')
+      console.log(`  ${c.cyan(a.name.padEnd(20))} ${status.padEnd(18)} ${c.dim(triggers.padEnd(16))} ${a.description?.slice(0, 40) || ''}`)
+    }
+    console.log('')
+    return
+  }
+
+  if (sub === 'create') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent create <name>'); return }
+    const dir = join(USER_AGENTS, name); mkdirSync(dir, { recursive: true })
+    const agent = {
+      name,
+      description: '',
+      enabled: false,
+      connections: [],
+      triggers: [{ type: 'manual' }],
+      action: {
+        goal: 'Describe what this agent should do when triggered.',
+        tools: ['search', 'http', 'read_file', 'exec'],
+        max_steps: 10,
+      },
+      permissions: { can_exec: false, can_read: true, can_write: false, can_http: true, allowed_domains: [], allowed_paths: [] },
+      budget: { per_run: 0.20, daily_max: 5.0, daily_spent: 0, last_reset: new Date().toISOString().slice(0, 10) },
+      memory: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    writeFileSync(join(dir, 'agent.json'), JSON.stringify(agent, null, 2))
+    console.log(c.green(`  Created agent: ${name}`))
+    console.log(c.dim(`  Config: ~/.clove/agents/${name}/agent.json`))
+    console.log(c.dim(`  Edit the config, then: clove agent enable ${name}`))
+    return
+  }
+
+  if (sub === 'enable') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent enable <name>'); return }
+    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
+    agent.enabled = true; agent.updated_at = new Date().toISOString()
+    writeFileSync(join(USER_AGENTS, name, 'agent.json'), JSON.stringify(agent, null, 2))
+    console.log(c.green(`  Enabled: ${name}`))
+    return
+  }
+
+  if (sub === 'disable') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent disable <name>'); return }
+    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
+    agent.enabled = false; agent.updated_at = new Date().toISOString()
+    writeFileSync(join(USER_AGENTS, name, 'agent.json'), JSON.stringify(agent, null, 2))
+    console.log(c.green(`  Disabled: ${name}`))
+    return
+  }
+
+  if (sub === 'run') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent run <name>'); return }
+    const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Kernel not running.')); return }
+    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
+    console.log(c.cyan(`  Running: ${name}`))
+    console.log(c.dim(`  ${agent.action.goal.slice(0, 60)}`))
+    console.log('')
+    await cmdRun(agent.action.goal, agent.budget.per_run)
+    return
+  }
+
+  if (sub === 'show' || sub === 'info') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent show <name>'); return }
+    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
+    console.log(''); console.log(c.bold(`  ${agent.name}`))
+    console.log(c.dim('  ─────────────────────────────────────'))
+    console.log(`  Status:      ${agent.enabled ? c.green('enabled') : c.dim('disabled')}`)
+    console.log(`  Description: ${agent.description || c.dim('none')}`)
+    console.log(`  Triggers:    ${agent.triggers.map((t: Record<string, unknown>) => `${t.type}${t.schedule ? ' ' + t.schedule : ''}`).join(', ')}`)
+    console.log(`  Tools:       ${agent.action.tools.join(', ')}`)
+    console.log(`  Connections: ${agent.connections.length ? agent.connections.join(', ') : c.dim('none')}`)
+    console.log(`  Budget:      $${agent.budget.per_run}/run, $${agent.budget.daily_max}/day (spent: $${agent.budget.daily_spent})`)
+    console.log(`  Max steps:   ${agent.action.max_steps}`)
+    console.log(`  Goal:`)
+    console.log(c.dim(`    ${agent.action.goal.slice(0, 200)}`))
+    console.log('')
+    return
+  }
+
+  if (sub === 'delete' || sub === 'rm') {
+    const name = args[1]; if (!name) { console.log('Usage: clove agent delete <name>'); return }
+    const dir = join(USER_AGENTS, name)
+    if (existsSync(dir)) {
+      const { rmSync } = await import('node:fs')
+      rmSync(dir, { recursive: true })
+      console.log(c.green(`  Deleted: ${name}`))
+    } else { console.log(c.red(`Agent not found: ${name}`)) }
+    return
+  }
+
+  console.log('Usage: clove agent [list|create|enable|disable|run|show|delete] <name>')
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadLocalAgents(): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const agents: any[] = []
+  if (!existsSync(USER_AGENTS)) return agents
+  for (const dir of readdirSync(USER_AGENTS)) {
+    const p = join(USER_AGENTS, dir, 'agent.json')
+    if (existsSync(p)) { try { agents.push(JSON.parse(readFileSync(p, 'utf-8'))) } catch {} }
+  }
+  return agents
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadAgent(name: string): any | null {
+  const p = join(USER_AGENTS, name, 'agent.json')
+  if (!existsSync(p)) return null
+  try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return null }
+}
+
 // ── MCP ────────────────────────────────────────────────────────────────
 
 async function cmdMcp(args: string[]): Promise<void> {
@@ -667,6 +902,13 @@ switch (cmd) {
   case 'scheduler':
     cmdScheduler()
     break
+  case 'connect':
+  case 'conn':
+    cmdConnect(args.slice(1))
+    break
+  case 'agent':
+    cmdAgent(args.slice(1))
+    break
   case 'mcp':
     cmdMcp(args.slice(1))
     break
@@ -706,29 +948,37 @@ ${c.bold('CLOVE')} — AI Agent Fleet OS
 
 ${c.bold('Usage:')} clove <command> [options]
 
+${c.bold('Quick Start:')}
+  ${c.cyan('clove start')}                          Start kernel
+  ${c.cyan('clove connect github')}                  Connect GitHub
+  ${c.cyan('clove agent create pr-reviewer')}        Create an agent
+  ${c.cyan('clove agent enable pr-reviewer')}        Enable it
+
 ${c.bold('Commands:')}
-  ${c.cyan('start')}                        Start kernel + dashboard
-  ${c.cyan('stop')}                         Stop kernel
-  ${c.cyan('status')}                       Health, agents, cost
-  ${c.cyan('run')} "goal" [--budget N]      Run an agent
-  ${c.cyan('fleet')} "goal" [-n N]          Run N agents in parallel
-  ${c.cyan('templates')}                    List agent templates
-  ${c.cyan('create')} <name>               Scaffold new template
-  ${c.cyan('deploy')} <name> [--param k=v] Deploy a template
-  ${c.cyan('recall')}                      Show shared memory
-  ${c.cyan('logs')} [N]                    Recent audit entries
-  ${c.cyan('dashboard')}                   Open dashboard
-  ${c.cyan('config')} [set k v | get k]    Configuration
+  ${c.cyan('start / stop / status')}                 Kernel lifecycle
+  ${c.cyan('run')} "goal" [--budget N]               Single agent run
+  ${c.cyan('fleet')} "goal" [-n N]                   Parallel fleet run
+  ${c.cyan('connect')} <service>                     Connect external service
+  ${c.cyan('connect list')}                          Show connections
+  ${c.cyan('agent create')} <name>                   Create persistent agent
+  ${c.cyan('agent list')}                            List all agents
+  ${c.cyan('agent enable/disable')} <name>           Toggle agent
+  ${c.cyan('agent run')} <name>                      Manually trigger agent
+  ${c.cyan('agent show')} <name>                     Show agent details
+  ${c.cyan('agent delete')} <name>                   Remove agent
+  ${c.cyan('templates / deploy')}                    Browse & deploy templates
+  ${c.cyan('world list/create/launch')}              Manage worlds
+  ${c.cyan('mcp list/add')}                          MCP server management
+  ${c.cyan('recall / logs / dashboard / config')}    Utilities
+
+${c.bold('Services:')} github, slack, filesystem, postgres, notion, google_drive
 
 ${c.bold('Examples:')}
-  clove start
-  clove run "Research the top 5 AI companies"
-  clove fleet "Compare Rust, Go, and Python" -n 3
-  clove templates
-  clove deploy research-digest --param topic="AI agents"
-  clove create my-agent
-
-${c.bold('Shortcuts:')} s=status, r=run, f=fleet, d=dashboard, c=config
+  clove connect github ghp_abc123...
+  clove agent create monitoring-bot
+  clove agent run monitoring-bot
+  clove world launch code-health --param project_path=./my-app
+  clove fleet "Compare React vs Vue vs Svelte" -n 3
 `)
     break
   default:
