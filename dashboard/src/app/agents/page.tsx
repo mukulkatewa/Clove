@@ -1,302 +1,141 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useDemo } from '@/lib/demo-context'
-import { demoSandboxOverview } from '@/lib/demo-data'
 
-interface AgentOverview {
-  id: string
-  name: string
-  type: string
-  state: string
-  pid: number
-  budget_usd: number
-  cost_usd: number
-  channels: string[]
-  started_at_ms: number
-  permissions: {
-    can_exec: boolean
-    can_read: boolean
-    can_write: boolean
-    can_think: boolean
-    can_spawn: boolean
-    can_http: boolean
-    allowed_read_paths: string[]
-    allowed_write_paths: string[]
-    allowed_domains: string[]
-    blocked_commands: string[]
-  }
-  budget_tracking: {
-    max_cost_usd: number
-    cost_usd: number
-    max_tokens: number
-    tokens_used: number
-    max_steps: number
-    steps_taken: number
-  }
+interface AgentDef {
+  name: string; description: string; enabled: boolean
+  triggers: Array<{ type: string; schedule?: string; source?: string }>
+  connections: string[]
+  action: { goal: string; tools: string[]; max_steps: number }
+  budget: { per_run: number; daily_max: number; daily_spent: number }
+  created_at: string; updated_at: string
 }
 
-interface ActivityEntry {
-  event_type: string
-  category: string
-  agent_name: string
-  timestamp: string
-  success: boolean
-  details: Record<string, unknown>
-}
+const DEMO_AGENTS: AgentDef[] = [
+  { name: 'pr-reviewer', description: 'Reviews new PRs for security and code quality', enabled: true, triggers: [{ type: 'webhook', source: 'github' }], connections: ['github'], action: { goal: 'Review PR for issues', tools: ['read_file', 'exec', 'mcp_call'], max_steps: 15 }, budget: { per_run: 0.30, daily_max: 10, daily_spent: 1.2 }, created_at: '2026-03-28T10:00:00Z', updated_at: '2026-03-30T14:00:00Z' },
+  { name: 'api-monitor', description: 'Checks API health every 5 minutes', enabled: true, triggers: [{ type: 'cron', schedule: '*/5 * * * *' }], connections: [], action: { goal: 'Check API health', tools: ['http', 'store'], max_steps: 5 }, budget: { per_run: 0.05, daily_max: 2, daily_spent: 0.45 }, created_at: '2026-03-29T08:00:00Z', updated_at: '2026-03-30T12:00:00Z' },
+  { name: 'news-digest', description: 'Compiles AI news every weekday morning', enabled: true, triggers: [{ type: 'cron', schedule: '0 8 * * MON-FRI' }], connections: ['slack'], action: { goal: 'Compile AI news digest', tools: ['search', 'http', 'remember'], max_steps: 12 }, budget: { per_run: 0.40, daily_max: 3, daily_spent: 0.40 }, created_at: '2026-03-27T09:00:00Z', updated_at: '2026-03-30T08:00:00Z' },
+  { name: 'dep-scanner', description: 'Weekly dependency security scan', enabled: false, triggers: [{ type: 'cron', schedule: '0 18 * * FRI' }], connections: ['github'], action: { goal: 'Scan dependencies', tools: ['read_file', 'exec', 'http'], max_steps: 10 }, budget: { per_run: 0.50, daily_max: 2, daily_spent: 0 }, created_at: '2026-03-25T16:00:00Z', updated_at: '2026-03-28T18:00:00Z' },
+]
 
-interface SandboxOverview {
-  agents: AgentOverview[]
-  activity: ActivityEntry[]
-  cost: { total_usd: number }
-  memory_blocks: number
-}
-
-const API = ''
+const REGISTRY_URL = 'http://localhost:8090'
 
 export default function AgentsPage() {
   const { isDemo } = useDemo()
-  const [data, setData] = useState<SandboxOverview | null>(null)
+  const [agents, setAgents] = useState<AgentDef[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (isDemo) { setData(demoSandboxOverview() as any); return }
-    const load = () => {
-      fetch(`${API}/api/sandbox/overview`)
-        .then((r) => r.json())
-        .then(setData)
-        .catch(() => {})
-    }
-    load()
-    const interval = setInterval(load, 2000)
-    return () => clearInterval(interval)
+    if (isDemo) { setAgents(DEMO_AGENTS); setLoading(false); return }
+    fetch(`${REGISTRY_URL}/agents`).then(r => r.json()).then(d => { setAgents(d.agents || []); setLoading(false) }).catch(() => { setAgents([]); setLoading(false) })
+    const i = setInterval(() => { fetch(`${REGISTRY_URL}/agents`).then(r => r.json()).then(d => setAgents(d.agents || [])).catch(() => {}) }, 5000)
+    return () => clearInterval(i)
   }, [isDemo])
 
-  if (!data) {
-    return <div className="text-center py-20" style={{ color: 'var(--text-dim)' }}>Loading...</div>
+  const enabled = agents.filter(a => a.enabled)
+  const totalDaily = agents.reduce((s, a) => s + (a.budget?.daily_spent || 0), 0)
+
+  const toggleAgent = async (name: string, enable: boolean) => {
+    if (isDemo) { setAgents(prev => prev.map(a => a.name === name ? { ...a, enabled: enable } : a)); return }
+    await fetch(`${REGISTRY_URL}/agents/${name}/${enable ? 'enable' : 'disable'}`, { method: 'POST' }).catch(() => {})
+  }
+
+  const triggerLabel = (t: AgentDef['triggers'][0]) => {
+    if (t.type === 'cron') return t.schedule || 'cron'
+    if (t.type === 'webhook') return t.source ? `webhook:${t.source}` : 'webhook'
+    return t.type
+  }
+  const triggerColor = (type: string) => {
+    if (type === 'cron') return { bg: 'var(--blue-light)', fg: 'var(--blue)' }
+    if (type === 'webhook') return { bg: 'var(--accent-light)', fg: 'var(--accent)' }
+    return { bg: 'var(--bg-raised)', fg: 'var(--text-dim)' }
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-8">
         <div>
-          <h2 style={{ fontSize: 24, fontWeight: 600, color: 'var(--text)' }}>Sandbox Visualizer</h2>
-          <p style={{ fontSize: 14, marginTop: 4, color: 'var(--text-secondary)' }}>
-            Every permission explicit. Every action visible. Every agent governed.
-          </p>
+          <h2 className="text-[24px] font-semibold tracking-[-0.03em]">Agents</h2>
+          <p className="text-[14px] mt-1" style={{ color: 'var(--text-dim)' }}>{enabled.length} active · ${totalDaily.toFixed(2)} spent today</p>
         </div>
-        <div className="flex gap-4 text-sm">
-          <Stat label="Cost" value={`$${data.cost.total_usd.toFixed(4)}`} color="var(--accent)" />
-          <Stat label="Memory" value={String(data.memory_blocks)} color="var(--blue)" />
-          <Stat label="Events" value={String(data.activity.length)} color="var(--yellow)" />
-        </div>
+        <Link href="/agents/new" className="px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white" style={{ background: 'var(--accent)' }}>+ New Agent</Link>
       </div>
 
-      {data.agents.length === 0 ? (
-        <div className="card" style={{ padding: 48, textAlign: 'center' }}>
-          <p style={{ color: 'var(--text-dim)' }}>No agents running. Spawn one from the OpenClaw page or via API.</p>
+      <div className="grid grid-cols-4 gap-3 mb-8">
+        <MStat label="Total" value={String(agents.length)} />
+        <MStat label="Active" value={String(enabled.length)} color="var(--green)" />
+        <MStat label="Daily Spend" value={`$${totalDaily.toFixed(2)}`} color="var(--accent)" />
+        <MStat label="Triggers" value={String(agents.reduce((s, a) => s + a.triggers.length, 0))} color="var(--blue)" />
+      </div>
+
+      {loading ? <div className="card py-16 text-center text-[13px]" style={{ color: 'var(--text-dim)' }}>Loading...</div> :
+      agents.length === 0 ? (
+        <div className="card py-16 text-center">
+          <div className="text-[16px] font-semibold mb-2">No agents yet</div>
+          <p className="text-[13px] mb-4" style={{ color: 'var(--text-dim)' }}>Create a persistent agent with triggers, connections, and budget controls.</p>
+          <Link href="/agents/new" className="inline-block px-5 py-2.5 rounded-xl text-[13px] font-semibold text-white" style={{ background: 'var(--accent)' }}>Create Agent</Link>
         </div>
       ) : (
-        <div className="space-y-4">
-          {data.agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} />
-          ))}
+        <div className="space-y-3">
+          {agents.map(agent => {
+            const pct = agent.budget.daily_max > 0 ? (agent.budget.daily_spent / agent.budget.daily_max) * 100 : 0
+            return (
+              <div key={agent.name} className="card p-5 hover:shadow-md transition-shadow">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => toggleAgent(agent.name, !agent.enabled)}
+                      className="w-[36px] h-[20px] rounded-full p-[2px] transition-all flex-shrink-0"
+                      style={{ background: agent.enabled ? 'var(--green)' : 'var(--border)' }}>
+                      <div className="w-[16px] h-[16px] rounded-full bg-white transition-all" style={{ transform: agent.enabled ? 'translateX(16px)' : 'translateX(0)' }} />
+                    </button>
+                    <div>
+                      <div className="text-[15px] font-semibold">{agent.name}</div>
+                      <div className="text-[13px]" style={{ color: 'var(--text-dim)' }}>{agent.description}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {agent.triggers.map((t, i) => { const tc = triggerColor(t.type); return <span key={i} className="text-[10px] font-semibold px-2 py-[3px] rounded-full" style={{ background: tc.bg, color: tc.fg }}>{triggerLabel(t)}</span> })}
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 gap-4">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.06em] font-medium mb-1.5" style={{ color: 'var(--text-dim)' }}>Tools</div>
+                    <div className="flex flex-wrap gap-1">
+                      {agent.action.tools.slice(0, 4).map(t => <span key={t} className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>{t}</span>)}
+                      {agent.action.tools.length > 4 && <span className="text-[10px]" style={{ color: 'var(--text-dim)' }}>+{agent.action.tools.length - 4}</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.06em] font-medium mb-1.5" style={{ color: 'var(--text-dim)' }}>Connections</div>
+                    {agent.connections.length > 0 ? <div className="flex gap-1">{agent.connections.map(c => <span key={c} className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>{c}</span>)}</div> : <span className="text-[11px]" style={{ color: 'var(--text-dim)' }}>none</span>}
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.06em] font-medium mb-1.5" style={{ color: 'var(--text-dim)' }}>Budget</div>
+                    <div className="text-[12px] tabular-nums">${agent.budget.daily_spent.toFixed(2)} <span style={{ color: 'var(--text-dim)' }}>/ ${agent.budget.daily_max.toFixed(2)}</span></div>
+                    <div className="h-[3px] rounded-full mt-1 overflow-hidden" style={{ background: 'var(--bg)' }}>
+                      <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: pct > 80 ? 'var(--red)' : 'var(--green)' }} />
+                    </div>
+                  </div>
+                  <div className="flex items-end justify-end">
+                    <button onClick={async () => { if (!isDemo) await fetch(`${REGISTRY_URL}/agents/${agent.name}/run`, { method: 'POST' }) }}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-medium" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                      Run Now
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
-
-      {/* Activity feed */}
-      <div className="mt-8">
-        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: 'var(--text)' }}>Live Activity</h3>
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          {data.activity.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', fontSize: 14, color: 'var(--text-dim)' }}>No activity yet.</div>
-          ) : (
-            <div className="max-h-64 overflow-y-auto">
-              {data.activity.map((e, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 px-4 py-2"
-                  style={{
-                    fontSize: 12,
-                    borderBottom: '1px solid var(--border-subtle)',
-                    background: i % 2 === 0 ? 'var(--bg-card)' : 'var(--bg)',
-                  }}
-                >
-                  <span
-                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    style={{ background: e.success ? 'var(--green)' : 'var(--red)' }}
-                  />
-                  <span className="mono" style={{ color: 'var(--accent)', minWidth: 160 }}>{e.event_type}</span>
-                  <span style={{ color: 'var(--text-dim)', minWidth: 80 }}>{e.category}</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>{e.agent_name}</span>
-                  <span className="ml-auto" style={{ color: 'var(--text-dim)' }}>
-                    {e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   )
 }
 
-function AgentCard({ agent }: { agent: AgentOverview }) {
-  const p = agent.permissions
-  const b = agent.budget_tracking
-  const budgetPct = b.max_cost_usd > 0 ? Math.min((b.cost_usd / b.max_cost_usd) * 100, 100) : 0
-
-  const handleKill = async () => {
-    await fetch(`${API}/api/openclaw/${agent.id}/stop`, { method: 'POST' })
-  }
-
-  return (
-    <div
-      className="card"
-      style={{
-        padding: 20,
-        borderLeft: `3px solid ${agent.state === 'running' ? 'var(--green)' : 'var(--border)'}`,
-      }}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>{agent.name}</span>
-          <span
-            style={{
-              fontSize: 12,
-              padding: '2px 8px',
-              borderRadius: 8,
-              fontWeight: 500,
-              background: agent.state === 'running' ? 'var(--green-light)' : 'var(--red-light)',
-              color: agent.state === 'running' ? 'var(--green)' : 'var(--red)',
-            }}
-          >
-            {agent.state}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>PID {agent.pid}</span>
-          {agent.channels.length > 0 && (
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{agent.channels.join(', ')}</span>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleKill}
-            style={{
-              padding: '4px 12px',
-              borderRadius: 12,
-              fontSize: 12,
-              fontWeight: 600,
-              border: '1px solid var(--red)',
-              color: 'var(--red)',
-              background: 'var(--red-light)',
-            }}
-          >
-            Kill
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-6">
-        {/* Permissions */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Tools</div>
-          <div className="space-y-1">
-            <PermRow label="read_file" allowed={p.can_read} />
-            <PermRow label="write_file" allowed={p.can_write} />
-            <PermRow label="exec" allowed={p.can_exec} />
-            <PermRow label="http" allowed={p.can_http} />
-            <PermRow label="think (LLM)" allowed={p.can_think} />
-            <PermRow label="spawn" allowed={p.can_spawn} />
-          </div>
-        </div>
-
-        {/* Filesystem + Network */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Filesystem</div>
-          <div className="space-y-1 mb-3">
-            {p.allowed_read_paths.length > 0 ? (
-              p.allowed_read_paths.map((path, i) => (
-                <div key={i} className="mono" style={{ fontSize: 12, color: 'var(--green)' }}>
-                  {path} <span style={{ color: 'var(--text-dim)' }}>read</span>
-                </div>
-              ))
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No path restrictions</div>
-            )}
-            {p.allowed_write_paths.map((path, i) => (
-              <div key={i} className="mono" style={{ fontSize: 12, color: 'var(--yellow)' }}>
-                {path} <span style={{ color: 'var(--text-dim)' }}>write</span>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Network</div>
-          <div className="space-y-1">
-            {p.allowed_domains.length > 0 ? (
-              p.allowed_domains.map((d, i) => (
-                <div key={i} className="mono" style={{ fontSize: 12, color: 'var(--green)' }}>{d}</div>
-              ))
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>No domain restrictions</div>
-            )}
-          </div>
-        </div>
-
-        {/* Budget */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)', marginBottom: 8 }}>Budget</div>
-          <div className="mono" style={{ fontSize: 24, fontWeight: 600, color: 'var(--accent)' }}>
-            ${b.cost_usd.toFixed(4)}
-          </div>
-          {b.max_cost_usd > 0 && (
-            <>
-              <div style={{ fontSize: 12, marginTop: 4, color: 'var(--text-dim)' }}>
-                of ${b.max_cost_usd.toFixed(2)} ({budgetPct.toFixed(1)}%)
-              </div>
-              <div className="overflow-hidden" style={{ height: 8, borderRadius: 9999, marginTop: 8, background: 'var(--border)' }}>
-                <div
-                  className="transition-all"
-                  style={{
-                    height: '100%',
-                    borderRadius: 9999,
-                    width: `${budgetPct}%`,
-                    background: budgetPct > 80 ? 'var(--red)' : budgetPct > 50 ? 'var(--yellow)' : 'var(--green)',
-                  }}
-                />
-              </div>
-            </>
-          )}
-          <div className="space-y-1" style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim)' }}>
-            <div>Tokens: {b.tokens_used.toLocaleString()}{b.max_tokens > 0 ? ` / ${b.max_tokens.toLocaleString()}` : ''}</div>
-            <div>Steps: {b.steps_taken}{b.max_steps > 0 ? ` / ${b.max_steps}` : ''}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function PermRow({ label, allowed }: { label: string; allowed: boolean }) {
-  return (
-    <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
-      <span
-        className="w-4 text-center"
-        style={{ color: allowed ? 'var(--green)' : 'var(--red)' }}
-      >
-        {allowed ? '\u2713' : '\u2717'}
-      </span>
-      <span className="mono" style={{ color: allowed ? 'var(--text)' : 'var(--text-dim)', opacity: allowed ? 1 : 0.5 }}>
-        {label}
-      </span>
-    </div>
-  )
-}
-
-function Stat({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div className="text-right">
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)' }}>{label}</div>
-      <div className="mono" style={{ fontWeight: 600, color }}>{value}</div>
-    </div>
-  )
+function MStat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return <div className="card p-4">
+    <div className="text-[10px] uppercase tracking-[0.06em] font-medium mb-1" style={{ color: 'var(--text-dim)' }}>{label}</div>
+    <div className="text-[20px] font-bold tabular-nums" style={{ color: color || 'var(--text)' }}>{value}</div>
+  </div>
 }
