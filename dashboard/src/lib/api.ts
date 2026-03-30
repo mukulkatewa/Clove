@@ -164,6 +164,19 @@ export const getMessages = (agentId: number) =>
     `/api/agents/${agentId}/messages`,
   )
 
+// MCP
+export interface McpServer { name: string; status: string; tools_count: number; command: string }
+export interface McpTool { server_name: string; name: string; description: string; input_schema: Record<string, unknown> }
+export const getMcpServers = () => fetchAPI<{ servers: McpServer[] }>('/api/mcp/servers')
+export const getMcpTools = () => fetchAPI<{ tools: McpTool[] }>('/api/mcp/tools')
+export const callMcpTool = (server: string, tool: string, args: Record<string, unknown>) =>
+  fetchAPI<{ success: boolean; content: string; duration_ms: number }>('/api/mcp/call', { method: 'POST', body: JSON.stringify({ server, tool, arguments: args }) })
+
+// World launch
+export interface WorldLaunchRequest { template?: string; config?: Record<string, unknown>; params: Record<string, string> }
+export const launchWorld = (req: WorldLaunchRequest) =>
+  fetchAPI<{ success: boolean; report: string; cost: number; agents: number }>('/api/worlds/launch', { method: 'POST', body: JSON.stringify(req) })
+
 // Worlds
 export interface WorldSummary { id: number; name: string; member_count: number; metadata: Record<string, unknown> }
 export const getWorlds = () => fetchAPI<{ worlds: WorldSummary[] }>('/api/worlds')

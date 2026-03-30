@@ -533,6 +533,90 @@ async function cmdScheduler(): Promise<void> {
   }
 }
 
+// ── MCP ────────────────────────────────────────────────────────────────
+
+async function cmdMcp(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  const sub = args[0] || 'list'
+
+  if (sub === 'list' || sub === 'ls') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const servers = await api<{ servers: Array<{ name: string; status: string; tools_count: number }> }>(cfg.apiPort, '/api/mcp/servers')
+    const tools = await api<{ tools: Array<{ server_name: string; name: string; description: string }> }>(cfg.apiPort, '/api/mcp/tools')
+    console.log(''); console.log(c.bold('  MCP Servers'))
+    if (!servers?.servers?.length) { console.log(c.dim('  No servers configured. Add them in ~/.clove/mcp.yaml')); console.log(''); return }
+    for (const s of servers.servers) {
+      const st = s.status === 'running' ? c.green('running') : c.dim(s.status)
+      console.log(`  ${c.cyan(s.name.padEnd(16))} ${st.padEnd(18)} ${s.tools_count} tools`)
+    }
+    if (tools?.tools?.length) {
+      console.log(''); console.log(c.bold('  Tools'))
+      for (const t of tools.tools) {
+        console.log(`  ${c.dim(t.server_name.padEnd(16))} ${c.cyan(t.name.padEnd(20))} ${c.dim(t.description.slice(0, 50))}`)
+      }
+    }
+    console.log('')
+  } else if (sub === 'add') {
+    const name = args[1]; const command = args.slice(2).join(' ')
+    if (!name || !command) { console.log('Usage: clove mcp add <name> <command>'); return }
+    const mcpPath = join(CLOVE_DIR, 'mcp.yaml')
+    let content = existsSync(mcpPath) ? readFileSync(mcpPath, 'utf-8') : 'servers:\n'
+    content += `  - name: "${name}"\n    command: ${command.split(' ')[0]}\n    args: [${command.split(' ').slice(1).map(a => `"${a}"`).join(', ')}]\n`
+    writeFileSync(mcpPath, content)
+    console.log(c.green(`Added MCP server: ${name}`))
+    console.log(c.dim(`  Restart kernel to apply: clove stop && clove start`))
+  } else if (sub === 'remove' || sub === 'rm') {
+    console.log(c.dim('Edit ~/.clove/mcp.yaml to remove servers, then restart kernel.'))
+  } else {
+    console.log('Usage: clove mcp [list|add|remove]')
+  }
+}
+
+// ── World Commands ─────────────────────────────────────────────────────
+
+async function cmdWorld(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  const sub = args[0] || 'list'
+
+  if (sub === 'list' || sub === 'ls') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const worlds = await api<{ worlds: Array<{ id: number; name: string; member_count: number }> }>(cfg.apiPort, '/api/worlds')
+    console.log(''); console.log(c.bold('  Worlds'))
+    if (!worlds?.worlds?.length) { console.log(c.dim('  No worlds. Create one: clove world create <name>')); console.log(''); return }
+    for (const w of worlds.worlds) {
+      const members = w.member_count > 0 ? c.green(`${w.member_count} agents`) : c.dim('empty')
+      console.log(`  ${c.cyan(String(w.id).padEnd(4))} ${w.name.padEnd(24)} ${members}`)
+    }
+    console.log('')
+  } else if (sub === 'create') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove world create <name>'); return }
+    await api(cfg.apiPort, '/api/worlds', 'POST', { name })
+    console.log(c.green(`Created world: ${name}`))
+  } else if (sub === 'launch') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const tplName = args[1]; if (!tplName) { console.log('Usage: clove world launch <template> --param key=value'); return }
+    // Parse params
+    const params: Record<string, string> = {}
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--param' && args[i+1]) { const eq = args[i+1].indexOf('='); if (eq > 0) params[args[i+1].slice(0, eq)] = args[i+1].slice(eq+1); i++ }
+    }
+    console.log(c.cyan(`Launching world: ${tplName}`))
+    // For now, delegate to the Python world runner
+    const scriptPath = join(__cli_dir, '..', '..', 'examples', 'worlds', `${tplName}.py`)
+    if (existsSync(scriptPath)) {
+      const paramArgs = Object.entries(params).map(([, v]) => v)
+      const child = spawn('python3', [scriptPath, ...paramArgs], { stdio: 'inherit' })
+      child.on('close', (code) => { if (code !== 0) console.log(c.red(`Exited with code ${code}`)) })
+    } else {
+      console.log(c.red(`World template not found: ${tplName}`))
+      console.log(c.dim(`  Available: code-health`))
+    }
+  } else {
+    console.log('Usage: clove world [list|create|launch]')
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
@@ -582,6 +666,12 @@ switch (cmd) {
     break
   case 'scheduler':
     cmdScheduler()
+    break
+  case 'mcp':
+    cmdMcp(args.slice(1))
+    break
+  case 'world':
+    cmdWorld(args.slice(1))
     break
   case 'recall':
   case 'memory':

@@ -115,3 +115,42 @@ export function demoSandboxOverview() {
     cost: { total_usd: 4.2847 }, memory_blocks: 8,
   }
 }
+
+export function demoMcpServers() {
+  return [
+    { name: 'filesystem', status: 'running', tools_count: 5, command: 'npx @modelcontextprotocol/server-filesystem /tmp' },
+    { name: 'github', status: 'running', tools_count: 12, command: 'npx @modelcontextprotocol/server-github' },
+    { name: 'slack', status: 'stopped', tools_count: 8, command: 'npx @modelcontextprotocol/server-slack' },
+    { name: 'postgres', status: 'running', tools_count: 6, command: 'npx @modelcontextprotocol/server-postgres' },
+  ]
+}
+
+export function demoMcpTools() {
+  return [
+    { server_name: 'filesystem', name: 'read_file', description: 'Read contents of a file', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+    { server_name: 'filesystem', name: 'write_file', description: 'Write content to a file', input_schema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } } },
+    { server_name: 'filesystem', name: 'list_directory', description: 'List files in a directory', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+    { server_name: 'filesystem', name: 'search_files', description: 'Search for files matching a pattern', input_schema: { type: 'object', properties: { pattern: { type: 'string' } } } },
+    { server_name: 'filesystem', name: 'get_file_info', description: 'Get file metadata', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+    { server_name: 'github', name: 'list_repos', description: 'List repositories for the authenticated user', input_schema: { type: 'object' } },
+    { server_name: 'github', name: 'get_repo', description: 'Get repository details', input_schema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' } } } },
+    { server_name: 'github', name: 'list_issues', description: 'List issues in a repository', input_schema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' } } } },
+    { server_name: 'github', name: 'create_issue', description: 'Create a new issue', input_schema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' }, title: { type: 'string' } } } },
+    { server_name: 'github', name: 'list_prs', description: 'List pull requests', input_schema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' } } } },
+    { server_name: 'github', name: 'get_pr', description: 'Get pull request details', input_schema: { type: 'object', properties: { owner: { type: 'string' }, repo: { type: 'string' }, number: { type: 'number' } } } },
+    { server_name: 'github', name: 'create_pr', description: 'Create a pull request', input_schema: {} },
+    { server_name: 'slack', name: 'send_message', description: 'Send a message to a Slack channel', input_schema: { type: 'object', properties: { channel: { type: 'string' }, text: { type: 'string' } } } },
+    { server_name: 'slack', name: 'list_channels', description: 'List available channels', input_schema: {} },
+    { server_name: 'postgres', name: 'query', description: 'Execute a SQL query', input_schema: { type: 'object', properties: { sql: { type: 'string' } } } },
+    { server_name: 'postgres', name: 'list_tables', description: 'List database tables', input_schema: {} },
+    { server_name: 'postgres', name: 'describe_table', description: 'Get table schema', input_schema: { type: 'object', properties: { table: { type: 'string' } } } },
+  ]
+}
+
+export function demoWorldTemplates() {
+  return [
+    { name: 'code-health', displayName: 'Code Health Check', description: '3 agents review security, deps, quality — synthesize into report', agents: 4, category: 'dev' },
+    { name: 'incident-response', displayName: 'Incident Response', description: 'Sentinel + diagnostician + fixer + verifier for prod issues', agents: 4, category: 'ops' },
+    { name: 'research-station', displayName: 'Research Station', description: 'Parallel researchers + writer + reviewer on any topic', agents: 5, category: 'research' },
+  ]
+}
