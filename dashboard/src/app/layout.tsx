@@ -12,7 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="flex min-h-screen">
         <DemoProvider>
           <Sidebar />
-          <main className="flex-1 py-8 px-10 ml-[240px]">{children}</main>
+          <main className="flex-1 py-8 px-10 ml-[220px]">{children}</main>
           <CommandPalette />
         </DemoProvider>
       </body>
