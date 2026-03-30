@@ -15,72 +15,71 @@ const operate = [
   { href: '/swarm', label: 'Swarm', icon: 'M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4' },
 ]
 
+const system = [
+  { href: '/worlds', label: 'Worlds', icon: 'M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { href: '/memory', label: 'Memory', icon: 'M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4' },
+  { href: '/mcp', label: 'MCP Bridge', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
+  { href: '/openclaw', label: 'OpenClaw', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
+]
+
 const observe = [
   { href: '/activity', label: 'Activity', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' },
+  { href: '/audit', label: 'Audit Log', icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { href: '/cost', label: 'Cost', icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
   { href: '/settings', label: 'Settings', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
 ]
 
 export function Sidebar() {
   const pathname = usePathname()
   const { isDemo, toggle } = useDemo()
-
-  const isActive = (href: string) => {
-    if (href === '/') return pathname === '/'
-    return pathname.startsWith(href)
-  }
+  const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-[220px] flex flex-col z-50" style={{ background: 'var(--bg-card)', borderRight: '1px solid var(--border)' }}>
-      {/* Logo */}
-      <Link href="/" className="flex items-center gap-2.5 px-5 pt-6 pb-5">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #e07628, #f59e0b)' }}>
-          <span className="text-white text-[13px] font-bold">C</span>
+      <Link href="/" className="flex items-center gap-2.5 px-5 pt-5 pb-4">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #e07628, #f59e0b)' }}>
+          <span className="text-white text-[12px] font-bold">C</span>
         </div>
         <div>
-          <div className="text-[15px] font-semibold tracking-[-0.02em]">CLOVE</div>
+          <div className="text-[14px] font-semibold tracking-[-0.02em]">CLOVE</div>
           <div className="text-[9px] tracking-[0.06em] uppercase" style={{ color: 'var(--text-dim)' }}>Agent Fleet OS</div>
         </div>
       </Link>
 
-      <nav className="flex-1 px-3 overflow-y-auto">
-        <SectionLabel>Build</SectionLabel>
-        {build.map(item => <NavItem key={item.href} item={item} active={isActive(item.href)} />)}
-
-        <SectionLabel>Operate</SectionLabel>
-        {operate.map(item => <NavItem key={item.href} item={item} active={isActive(item.href)} />)}
-
-        <SectionLabel>Observe</SectionLabel>
-        {observe.map(item => <NavItem key={item.href} item={item} active={isActive(item.href)} />)}
+      <nav className="flex-1 px-2.5 overflow-y-auto">
+        <SL>Build</SL>
+        {build.map(i => <NI key={i.href} item={i} active={isActive(i.href)} />)}
+        <SL>Operate</SL>
+        {operate.map(i => <NI key={i.href} item={i} active={isActive(i.href)} />)}
+        <SL>System</SL>
+        {system.map(i => <NI key={i.href} item={i} active={isActive(i.href)} />)}
+        <SL>Observe</SL>
+        {observe.map(i => <NI key={i.href} item={i} active={isActive(i.href)} />)}
       </nav>
 
-      {/* Demo */}
-      <div className="px-3 py-3" style={{ borderTop: '1px solid var(--border)' }}>
-        <button onClick={toggle}
-          className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px] transition-all"
+      <div className="px-3 py-2.5" style={{ borderTop: '1px solid var(--border)' }}>
+        <button onClick={toggle} className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] transition-all"
           style={{ background: isDemo ? 'var(--yellow-light)' : 'transparent', color: isDemo ? 'var(--yellow)' : 'var(--text-dim)' }}>
           <span className="font-medium">{isDemo ? 'Exit Demo' : 'Demo Mode'}</span>
-          <div className="w-[28px] h-[16px] rounded-full p-[2px] transition-all" style={{ background: isDemo ? 'var(--yellow)' : 'var(--border)' }}>
-            <div className="w-[12px] h-[12px] rounded-full transition-all" style={{ background: isDemo ? '#fff' : 'var(--text-dim)', transform: isDemo ? 'translateX(12px)' : 'translateX(0)' }} />
+          <div className="w-[26px] h-[14px] rounded-full p-[2px] transition-all" style={{ background: isDemo ? 'var(--yellow)' : 'var(--border)' }}>
+            <div className="w-[10px] h-[10px] rounded-full transition-all" style={{ background: isDemo ? '#fff' : 'var(--text-dim)', transform: isDemo ? 'translateX(12px)' : 'translateX(0)' }} />
           </div>
         </button>
       </div>
-      <div className="px-5 py-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>v2.0.0</div>
+      <div className="px-5 py-2 text-[9px]" style={{ color: 'var(--text-dim)' }}>v2.0.0</div>
     </aside>
   )
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <div className="text-[9px] font-semibold uppercase tracking-[0.1em] px-3 mt-5 mb-1.5" style={{ color: 'var(--text-dim)' }}>{children}</div>
+function SL({ children }: { children: React.ReactNode }) {
+  return <div className="text-[9px] font-semibold uppercase tracking-[0.1em] px-2.5 mt-4 mb-1" style={{ color: 'var(--text-dim)' }}>{children}</div>
 }
 
-function NavItem({ item, active }: { item: { href: string; label: string; icon: string }; active: boolean }) {
+function NI({ item, active }: { item: { href: string; label: string; icon: string }; active: boolean }) {
   return (
-    <Link href={item.href}
-      className="flex items-center gap-2.5 px-3 py-[7px] rounded-lg text-[13px] transition-all mb-[1px]"
+    <Link href={item.href} className="flex items-center gap-2 px-2.5 py-[6px] rounded-lg text-[12px] transition-all mb-[1px]"
       style={{ background: active ? 'var(--accent-light)' : 'transparent', color: active ? 'var(--accent)' : 'var(--text-secondary)', fontWeight: active ? 600 : 400 }}>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: active ? 1 : 0.4 }}>
-        <path d={item.icon} />
-      </svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: active ? 1 : 0.4 }}><path d={item.icon} /></svg>
       {item.label}
     </Link>
   )
