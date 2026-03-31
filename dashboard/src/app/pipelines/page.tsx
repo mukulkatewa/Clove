@@ -1,6 +1,9 @@
 'use client'
 import { useState, useRef, useCallback } from 'react'
 import { useDemo } from '@/lib/demo-context'
+import { streamFleet } from '@/lib/api'
+
+const API = process.env.NEXT_PUBLIC_API_URL || ''
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -78,7 +81,48 @@ export default function PipelinesPage() {
   const [selectedNode, setSelectedNode] = useState<PipelineNode | null>(null)
   const [connecting, setConnecting] = useState<string | null>(null)
   const [dragNode, setDragNode] = useState<string | null>(null)
+  const [missionGoal, setMissionGoal] = useState('')
+  const [launching, setLaunching] = useState(false)
+  const [launchResult, setLaunchResult] = useState<string | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+
+  const savePipeline = async () => {
+    if (!editorName.trim() || editorNodes.length === 0) return
+    const pipeline = { name: editorName, nodes: editorNodes, edges: editorEdges }
+    try {
+      await fetch(`${API}/api/store`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: `pipeline:${editorName}`, value: pipeline }) })
+      setCreating(false)
+    } catch {}
+  }
+
+  const launchPipeline = async () => {
+    if (!missionGoal.trim() || editorNodes.length === 0) return
+    setLaunching(true); setLaunchResult(null)
+    const agentConfigs = editorNodes.map(n => ({
+      name: n.name, role: n.role, tools: n.tools, budget: n.budget,
+    }))
+    try {
+      const r = await fetch(`${API}/api/fleet`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: missionGoal, world: editorName || 'pipeline-run', budget: editorNodes.reduce((s, n) => s + n.budget, 0), agent_configs: agentConfigs }),
+      })
+      const reader = r.body?.getReader()
+      if (reader) {
+        const decoder = new TextDecoder(); let buf = ''; let finalResult = ''
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n'); buf = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try { const ev = JSON.parse(line.slice(6)); if (ev.type === 'fleet_done') finalResult = `Done: $${ev.data?.total_cost_usd?.toFixed(4)} — ${ev.data?.total_tokens} tokens` } catch {}
+          }
+        }
+        setLaunchResult(finalResult || 'Complete')
+      }
+    } catch (e) { setLaunchResult(`Error: ${e}`) }
+    setLaunching(false)
+  }
 
   const W = 640, H = 400
 
@@ -227,15 +271,28 @@ export default function PipelinesPage() {
               </svg>
             </div>
 
-            {/* Bottom actions */}
+            {/* Mission + actions */}
+            <div className="card p-4 mb-3">
+              <input value={missionGoal} onChange={e => setMissionGoal(e.target.value)} placeholder="Mission goal for this pipeline..."
+                className="w-full rounded-lg px-3 py-2 text-[13px] outline-none placeholder:opacity-25 mb-2"
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }} />
+              {launchResult && <div className="text-[12px] mb-2 px-1" style={{ color: 'var(--green)' }}>{launchResult}</div>}
+            </div>
             <div className="flex items-center justify-between">
               <button onClick={() => setCreating(false)} className="text-[12px] font-medium" style={{ color: 'var(--text-dim)' }}>Cancel</button>
-              <div className="flex gap-2">
-                <span className="text-[11px] self-center mr-2" style={{ color: 'var(--text-dim)' }}>
-                  {editorNodes.length} agents · {editorEdges.length} connections · ${editorNodes.reduce((s, n) => s + n.budget, 0).toFixed(2)} total budget
+              <div className="flex gap-2 items-center">
+                <span className="text-[11px] mr-2" style={{ color: 'var(--text-dim)' }}>
+                  {editorNodes.length} agents · ${editorNodes.reduce((s, n) => s + n.budget, 0).toFixed(2)} budget
                 </span>
-                <button className="px-5 py-2.5 rounded-lg text-[12px] font-semibold text-white" style={{ background: 'var(--accent)' }}>
-                  Save Pipeline
+                <button onClick={savePipeline} disabled={!editorName.trim() || editorNodes.length === 0}
+                  className="px-4 py-2 rounded-lg text-[12px] font-medium disabled:opacity-30"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                  Save
+                </button>
+                <button onClick={launchPipeline} disabled={launching || !missionGoal.trim() || editorNodes.length === 0}
+                  className="px-5 py-2 rounded-lg text-[12px] font-semibold text-white disabled:opacity-30"
+                  style={{ background: 'var(--accent)' }}>
+                  {launching ? 'Launching...' : 'Launch'}
                 </button>
               </div>
             </div>

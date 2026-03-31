@@ -5,15 +5,30 @@ import { getAudit, getCost } from '@/lib/api'
 import type { AuditEntry, CostResponse } from '@/lib/api'
 import { demoAudit, demoCost } from '@/lib/demo-data'
 
+const API = process.env.NEXT_PUBLIC_API_URL || ''
+
+interface PolicyRec { type: string; description: string; severity: string; agent?: string }
+
 export default function GovernancePage() {
   const { isDemo } = useDemo()
   const [audit, setAudit] = useState<AuditEntry[]>([])
   const [cost, setCost] = useState<CostResponse | null>(null)
+  const [recommendations, setRecommendations] = useState<PolicyRec[]>([])
 
   useEffect(() => {
-    if (isDemo) { setAudit(demoAudit() as AuditEntry[]); setCost(demoCost() as CostResponse); return }
+    if (isDemo) {
+      setAudit(demoAudit() as AuditEntry[]); setCost(demoCost() as CostResponse)
+      setRecommendations([
+        { type: 'RESTRICT_EXEC', description: 'Agent "researcher-alpha" has exec permission but never uses shell commands. Consider disabling can_exec.', severity: 'low', agent: 'researcher-alpha' },
+        { type: 'NARROW_DOMAINS', description: 'Agent "api-monitor" is allowed all HTTP domains but only calls api.example.com. Restrict allowed_domains.', severity: 'medium', agent: 'api-monitor' },
+        { type: 'ADD_BUDGET', description: 'Agent "incident-responder" has no daily budget cap. Set daily_max to prevent runaway costs.', severity: 'high', agent: 'incident-responder' },
+        { type: 'BLOCK_COMMAND', description: 'Agent "fixer-charlie" uses exec and has written "rm -rf" in tool calls. Add to blocked_commands.', severity: 'critical', agent: 'fixer-charlie' },
+      ])
+      return
+    }
     getAudit(500).then(setAudit).catch(() => {})
     getCost().then(setCost).catch(() => {})
+    fetch(`${API}/api/policy/recommendations`).then(r => r.json()).then(d => setRecommendations(d.recommendations || [])).catch(() => {})
   }, [isDemo])
 
   const total = audit.length
@@ -138,6 +153,35 @@ export default function GovernancePage() {
                 <span style={{ color: 'var(--text-dim)' }}>{e.agent_name}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Policy Recommendations */}
+      {recommendations.length > 0 && (
+        <div className="card p-5 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-[11px] uppercase tracking-[0.06em] font-medium" style={{ color: 'var(--accent)' }}>Policy Recommendations</div>
+            <span className="text-[10px] font-semibold px-2 py-[3px] rounded-full" style={{ background: 'var(--yellow-light)', color: 'var(--yellow)' }}>{recommendations.length} suggestions</span>
+          </div>
+          <div className="space-y-2">
+            {recommendations.map((rec, i) => {
+              const sevColor = rec.severity === 'critical' ? 'var(--red)' : rec.severity === 'high' ? 'var(--red)' : rec.severity === 'medium' ? 'var(--yellow)' : 'var(--text-dim)'
+              const sevBg = rec.severity === 'critical' ? 'var(--red-light)' : rec.severity === 'high' ? 'var(--red-light)' : rec.severity === 'medium' ? 'var(--yellow-light)' : 'var(--bg-raised)'
+              return (
+                <div key={i} className="flex items-start gap-3 px-4 py-3 rounded-xl" style={{ background: 'var(--bg)' }}>
+                  <span className="text-[9px] font-semibold uppercase px-1.5 py-[3px] rounded-full flex-shrink-0 mt-0.5" style={{ background: sevBg, color: sevColor }}>{rec.severity}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12px] leading-relaxed">{rec.description}</div>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      {rec.agent && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}>{rec.agent}</span>}
+                      <span className="text-[10px] mono" style={{ color: 'var(--text-dim)' }}>{rec.type}</span>
+                    </div>
+                  </div>
+                  <button className="text-[10px] font-medium px-2 py-1 rounded-lg flex-shrink-0" style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}>Apply</button>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
