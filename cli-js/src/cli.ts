@@ -943,7 +943,7 @@ async function cmdWorld(args: string[]): Promise<void> {
       child.on('close', (code) => { if (code !== 0) console.log(c.red(`Exited with code ${code}`)) })
     } else {
       console.log(c.red(`World template not found: ${tplName}`))
-      console.log(c.dim(`  Available: code-health`))
+      console.log(c.dim(`  Available: code-health, code-mapper`))
     }
   } else {
     console.log('Usage: clove world [list|create|launch]')

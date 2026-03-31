@@ -1,0 +1,15 @@
+# TypeScript/JavaScript LSP server for CLOVE MCP bridge
+# Add to ~/.clove/mcp.yaml:
+#
+# servers:
+#   - name: "typescript-lsp"
+#     command: npx
+#     args: ["typescript-language-server", "--stdio"]
+#
+# Or use this config directly:
+# cp templates/lsp/typescript.yaml ~/.clove/mcp.yaml
+
+servers:
+  - name: "typescript-lsp"
+    command: npx
+    args: ["typescript-language-server", "--stdio"]

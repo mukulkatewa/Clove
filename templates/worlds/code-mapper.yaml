@@ -1,0 +1,45 @@
+apiVersion: clove/v1
+kind: WorldTemplate
+metadata:
+  name: "code-mapper"
+  displayName: "Code Intelligence Mapper"
+  description: "Maps a codebase into persistent memory using LSP. Subsequent agents recall the architecture without re-exploring."
+  category: "dev"
+  author: "clove"
+  version: "1.0.0"
+  tags: ["lsp", "memory", "code-intelligence", "architecture"]
+
+world:
+  name: "code-intel-{{timestamp}}"
+  auto_destroy: false  # Keep the world — memory persists
+
+agents:
+  - name: "structure-mapper"
+    role: "Map top-level project structure — directories, entry points, config files, dependencies."
+    tools: ["exec", "read_file", "remember"]
+    budget: 0.20
+    max_steps: 8
+
+  - name: "api-mapper"
+    role: "Find all public APIs, exports, routes, and endpoints. Store each with its location and signature."
+    tools: ["exec", "read_file", "remember", "mcp_call"]
+    budget: 0.30
+    max_steps: 10
+
+  - name: "dependency-mapper"
+    role: "Map internal dependencies — what imports what, call hierarchies, shared utilities."
+    tools: ["exec", "read_file", "remember", "mcp_call"]
+    budget: 0.30
+    max_steps: 10
+
+synthesis:
+  agent_name: "architect"
+  goal: "Combine all findings into a comprehensive architecture document. Store it as a CORE memory block named 'codebase-architecture'."
+  budget: 0.20
+  max_steps: 5
+
+parameters:
+  - name: "project_path"
+    type: "string"
+    label: "Project Path"
+    required: true

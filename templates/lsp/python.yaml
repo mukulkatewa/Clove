@@ -1,0 +1,14 @@
+# Python LSP server for CLOVE MCP bridge
+# Requires: pip install pyright
+#
+# Add to ~/.clove/mcp.yaml:
+#
+# servers:
+#   - name: "python-lsp"
+#     command: pyright-langserver
+#     args: ["--stdio"]
+
+servers:
+  - name: "python-lsp"
+    command: pyright-langserver
+    args: ["--stdio"]
