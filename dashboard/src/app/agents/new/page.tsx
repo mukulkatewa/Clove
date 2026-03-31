@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { submitRun } from '@/lib/api'
 
-const REGISTRY_URL = 'http://localhost:8090'
+const API = process.env.NEXT_PUBLIC_API_URL || ''
 
 const EXAMPLES = [
   'Monitor my production API every 5 minutes and alert if response time exceeds 2 seconds',
@@ -114,10 +114,10 @@ Return ONLY the JSON object, no markdown, no explanation.`,
       updated_at: new Date().toISOString(),
     }
     try {
-      await fetch(`${REGISTRY_URL}/agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(agent) })
+      await fetch(`${API}/api/agent-defs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(agent) })
       router.push('/agents')
     } catch {
-      setError('Agent registry not running. Start it with: node agent-registry/dist/index.js')
+      setError('Failed to save agent. Is the kernel running? (clove start)')
     }
     setSaving(false)
   }

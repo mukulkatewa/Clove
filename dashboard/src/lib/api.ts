@@ -154,6 +154,21 @@ export const getMemoryBlocks = () =>
 export const getAgents = () =>
   fetchAPI<Array<{ id: number; name: string; state: string }>>('/api/agents')
 
+// Agent Definitions (persistent)
+export interface AgentDef {
+  name: string; description: string; enabled: boolean
+  triggers: Array<{ type: string; schedule?: string; source?: string }>
+  connections: string[]; action: { goal: string; tools: string[]; max_steps: number; model?: string }
+  permissions?: Record<string, unknown>; budget: { per_run: number; daily_max: number; daily_spent?: number }
+  memory?: string[]; created_at?: string; updated_at?: string
+}
+export const getAgentDefs = () => fetchAPI<{ agents: AgentDef[]; count: number }>('/api/agent-defs')
+export const getAgentDef = (name: string) => fetchAPI<AgentDef>(`/api/agent-defs/${name}`)
+export const createAgentDef = (agent: AgentDef) => fetchAPI<AgentDef>('/api/agent-defs', { method: 'POST', body: JSON.stringify(agent) })
+export const updateAgentDef = (name: string, updates: Partial<AgentDef>) => fetchAPI<AgentDef>(`/api/agent-defs/${name}`, { method: 'PUT', body: JSON.stringify(updates) })
+export const deleteAgentDef = (name: string) => fetchAPI<{ success: boolean }>(`/api/agent-defs/${name}`, { method: 'DELETE' })
+export const runAgentDef = (name: string) => fetchAPI<{ success: boolean; content: string; total_cost_usd: number; steps: number }>(`/api/agent-defs/${name}/run`, { method: 'POST' })
+
 // IPC
 export const sendMessage = (fromId: number, to: number | string, content: string) =>
   fetchAPI<{ success: boolean }>(`/api/agents/${fromId}/message`, {
