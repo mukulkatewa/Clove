@@ -8,7 +8,25 @@ interface FleetAgent {
   role: string
   tools: string[]
   budget: number
+  model: string
+  runtime: 'clove' | 'claude-code' | 'codex' | 'openclaw'
 }
+
+const MODELS = [
+  { id: 'claude-sonnet-4', label: 'Claude Sonnet 4', provider: 'anthropic' },
+  { id: 'claude-haiku-4', label: 'Claude Haiku 4', provider: 'anthropic' },
+  { id: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
+  { id: 'gpt-4o-mini', label: 'GPT-4o Mini', provider: 'openai' },
+  { id: 'codex', label: 'Codex', provider: 'openai' },
+  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'google' },
+]
+
+const RUNTIMES = [
+  { id: 'clove', label: 'CLOVE', description: 'Kernel RunEngine' },
+  { id: 'claude-code', label: 'Claude Code', description: 'Anthropic agent runtime' },
+  { id: 'codex', label: 'Codex', description: 'OpenAI agent runtime' },
+  { id: 'openclaw', label: 'OpenClaw', description: 'Chat agent runtime' },
+]
 
 interface FleetEvent { type: string; data: Record<string, unknown> }
 
@@ -20,10 +38,10 @@ const TEMPLATES = [
     description: '3 researchers + synthesizer',
     world: 'research',
     agents: [
-      { name: 'researcher-1', role: 'Primary research on the main topic', tools: ['search', 'http', 'remember'], budget: 0.40 },
-      { name: 'researcher-2', role: 'Competitive landscape and alternatives', tools: ['search', 'http', 'remember'], budget: 0.40 },
-      { name: 'researcher-3', role: 'Data, numbers, and statistics', tools: ['search', 'http', 'remember'], budget: 0.40 },
-      { name: 'synthesizer', role: 'Merge all findings into one coherent report', tools: ['recall', 'write_file'], budget: 0.30 },
+      { name: 'researcher-1', role: 'Primary research on the main topic', tools: ['search', 'http', 'remember'], budget: 0.40, model: 'gpt-4o', runtime: 'clove' as const },
+      { name: 'researcher-2', role: 'Competitive landscape and alternatives', tools: ['search', 'http', 'remember'], budget: 0.40, model: 'gpt-4o', runtime: 'clove' as const },
+      { name: 'researcher-3', role: 'Data, numbers, and statistics', tools: ['search', 'http', 'remember'], budget: 0.40, model: 'gpt-4o-mini', runtime: 'clove' as const },
+      { name: 'synthesizer', role: 'Merge all findings into one coherent report', tools: ['recall', 'write_file'], budget: 0.30, model: 'claude-sonnet-4', runtime: 'clove' as const },
     ],
   },
   {
@@ -31,10 +49,10 @@ const TEMPLATES = [
     description: 'Security + deps + quality + report',
     world: 'code-review',
     agents: [
-      { name: 'security-scanner', role: 'Find vulnerabilities and security issues', tools: ['read_file', 'exec'], budget: 0.30 },
-      { name: 'dep-checker', role: 'Audit dependencies for issues', tools: ['read_file', 'exec'], budget: 0.30 },
-      { name: 'quality-reviewer', role: 'Check code quality and patterns', tools: ['read_file', 'exec'], budget: 0.30 },
-      { name: 'reporter', role: 'Synthesize findings into health report', tools: ['write_file'], budget: 0.20 },
+      { name: 'security-scanner', role: 'Find vulnerabilities and security issues', tools: ['read_file', 'exec'], budget: 0.30, model: 'claude-sonnet-4', runtime: 'claude-code' as const },
+      { name: 'dep-checker', role: 'Audit dependencies for issues', tools: ['read_file', 'exec'], budget: 0.30, model: 'gpt-4o', runtime: 'clove' as const },
+      { name: 'quality-reviewer', role: 'Check code quality and patterns', tools: ['read_file', 'exec'], budget: 0.30, model: 'claude-sonnet-4', runtime: 'clove' as const },
+      { name: 'reporter', role: 'Synthesize findings into health report', tools: ['write_file'], budget: 0.20, model: 'claude-haiku-4', runtime: 'clove' as const },
     ],
   },
   {
@@ -42,10 +60,10 @@ const TEMPLATES = [
     description: 'Detect → diagnose → fix → verify',
     world: 'incident',
     agents: [
-      { name: 'sentinel', role: 'Detect and characterize the anomaly', tools: ['http', 'store'], budget: 0.10 },
-      { name: 'diagnostician', role: 'Identify root cause from logs and metrics', tools: ['exec', 'read_file', 'http'], budget: 0.60 },
-      { name: 'fixer', role: 'Apply the fix based on diagnosis', tools: ['exec', 'write_file'], budget: 0.80 },
-      { name: 'verifier', role: 'Confirm the fix resolved the issue', tools: ['http', 'exec'], budget: 0.30 },
+      { name: 'sentinel', role: 'Detect and characterize the anomaly', tools: ['http', 'store'], budget: 0.10, model: 'gpt-4o-mini', runtime: 'clove' as const },
+      { name: 'diagnostician', role: 'Identify root cause from logs and metrics', tools: ['exec', 'read_file', 'http'], budget: 0.60, model: 'claude-sonnet-4', runtime: 'claude-code' as const },
+      { name: 'fixer', role: 'Apply the fix based on diagnosis', tools: ['exec', 'write_file'], budget: 0.80, model: 'codex', runtime: 'codex' as const },
+      { name: 'verifier', role: 'Confirm the fix resolved the issue', tools: ['http', 'exec'], budget: 0.30, model: 'gpt-4o', runtime: 'clove' as const },
     ],
   },
 ]
@@ -69,7 +87,7 @@ export default function FleetPage() {
   const [running, setRunning] = useState(false)
 
   const addAgent = () => {
-    setAgents([...agents, { name: `agent-${agents.length + 1}`, role: '', tools: ['search', 'http'], budget: 0.30 }])
+    setAgents([...agents, { name: `agent-${agents.length + 1}`, role: '', tools: ['search', 'http'], budget: 0.30, model: 'claude-sonnet-4', runtime: 'clove' }])
   }
 
   const updateAgent = (idx: number, updates: Partial<FleetAgent>) => {
@@ -193,6 +211,22 @@ export default function FleetPage() {
                       </div>
                       <input value={agent.role} onChange={e => updateAgent(idx, { role: e.target.value })} placeholder="What is this agent's role in the team?"
                         className="w-full rounded-lg px-3 py-1.5 text-[12px] outline-none placeholder:opacity-25" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }} />
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <div className="text-[9px] uppercase tracking-[0.06em] font-medium mb-1" style={{ color: 'var(--text-dim)' }}>Model</div>
+                          <select value={agent.model} onChange={e => updateAgent(idx, { model: e.target.value })}
+                            className="w-full rounded-lg px-2 py-1.5 text-[11px] outline-none appearance-none" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                            {MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                          </select>
+                        </div>
+                        <div className="flex-1">
+                          <div className="text-[9px] uppercase tracking-[0.06em] font-medium mb-1" style={{ color: 'var(--text-dim)' }}>Runtime</div>
+                          <select value={agent.runtime} onChange={e => updateAgent(idx, { runtime: e.target.value as FleetAgent['runtime'] })}
+                            className="w-full rounded-lg px-2 py-1.5 text-[11px] outline-none appearance-none" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                            {RUNTIMES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
                       <div className="flex flex-wrap gap-1">
                         {TOOL_OPTIONS.map(t => {
                           const on = agent.tools.includes(t)
