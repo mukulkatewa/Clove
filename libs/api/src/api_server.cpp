@@ -2510,6 +2510,193 @@ void ApiServer::setup_routes() {
     });
 
     // ===================================================================
+    // LLM Provider Management — store API keys per provider
+    // ===================================================================
+
+    // GET /api/providers — list configured providers (keys masked)
+    svr.Get("/api/providers", [this](const httplib::Request&, httplib::Response& res) {
+        auto keys = ctx_.state_store.keys("provider:", 0);
+        json providers = json::array();
+        for (const auto& key : keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            auto p = val.value();
+            std::string name = key.substr(9); // strip "provider:"
+            std::string api_key = p.value("api_key", "");
+            std::string masked = api_key.size() > 8 ? api_key.substr(0, 4) + "..." + api_key.substr(api_key.size() - 4) : "****";
+            providers.push_back({
+                {"name", name},
+                {"connected", !api_key.empty()},
+                {"key_masked", masked},
+                {"base_url", p.value("base_url", "")},
+                {"models", p.value("models", json::array())},
+            });
+        }
+        // Always include openrouter if configured via kernel config
+        if (ctx_.openrouter && ctx_.openrouter->is_configured()) {
+            bool found = false;
+            for (const auto& p : providers) { if (p.value("name", "") == "openrouter") found = true; }
+            if (!found) {
+                providers.push_back({{"name", "openrouter"}, {"connected", true}, {"key_masked", "from config"}, {"base_url", "https://openrouter.ai/api/v1"}, {"models", json::array()}});
+            }
+        }
+        res.set_content(json({{"providers", providers}, {"count", providers.size()}}).dump(), "application/json");
+    });
+
+    // POST /api/providers — save provider key
+    svr.Post("/api/providers", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            std::string api_key = body.value("api_key", "");
+            std::string base_url = body.value("base_url", "");
+            if (name.empty() || api_key.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"name and api_key required"})", "application/json");
+                return;
+            }
+            // Default base URLs per provider
+            if (base_url.empty()) {
+                if (name == "openai") base_url = "https://api.openai.com/v1";
+                else if (name == "anthropic") base_url = "https://api.anthropic.com/v1";
+                else if (name == "google") base_url = "https://generativelanguage.googleapis.com/v1";
+                else if (name == "openrouter") base_url = "https://openrouter.ai/api/v1";
+            }
+            ctx_.state_store.store("provider:" + name, json({{"api_key", api_key}, {"base_url", base_url}, {"name", name}}), 0);
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "PROVIDER_CONFIGURED", 0, "", {{"provider", name}});
+            res.status = 201;
+            res.set_content(json({{"name", name}, {"connected", true}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    // DELETE /api/providers/:name
+    svr.Delete(R"(/api/providers/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        ctx_.state_store.erase("provider:" + name, 0);
+        res.set_content(R"({"success":true})", "application/json");
+    });
+
+    // ===================================================================
+    // Agent Runtimes — spawn Claude Code, Codex, OpenClaw as agent processes
+    // ===================================================================
+
+    // POST /api/runtimes/claude-code/run — spawn Claude Code on a task
+    svr.Post("/api/runtimes/claude-code/run", [this](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res.status = 400; res.set_content(R"({"error":"invalid JSON"})", "application/json"); return;
+        }
+
+        std::string goal = body.value("goal", "");
+        std::string model = body.value("model", "claude-sonnet-4");
+        std::string working_dir = body.value("working_dir", ".");
+        int timeout_s = body.value("timeout_s", 300);
+        auto allowed_tools = body.value("allowed_tools", std::vector<std::string>{"Read", "Edit", "Bash"});
+
+        if (goal.empty()) {
+            res.status = 400; res.set_content(R"({"error":"goal required"})", "application/json"); return;
+        }
+
+        // Build command
+        std::string tools_arg;
+        for (const auto& t : allowed_tools) { if (!tools_arg.empty()) tools_arg += ","; tools_arg += t; }
+
+        std::string cmd = "claude -p \"" + goal + "\" --output-format json";
+        if (!tools_arg.empty()) cmd += " --allowedTools \"" + tools_arg + "\"";
+
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "claude-code"}, {"goal", goal.substr(0, 100)}});
+
+        // Execute via popen with timeout
+        std::string output;
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) {
+            res.status = 500;
+            res.set_content(json({{"error","failed to spawn claude-code. Is it installed? npm i -g @anthropic-ai/claude-code"}}).dump(), "application/json");
+            return;
+        }
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) { output += buf; if (output.size() > 500000) break; }
+        int exit_code = pclose(pipe);
+
+        json result;
+        result["runtime"] = "claude-code";
+        result["success"] = (exit_code == 0);
+        result["exit_code"] = exit_code;
+        result["content"] = output.substr(0, 50000);
+        result["goal"] = goal;
+        result["model"] = model;
+        res.set_content(result.dump(), "application/json");
+    });
+
+    // POST /api/runtimes/codex/run — spawn Codex on a task
+    svr.Post("/api/runtimes/codex/run", [this](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res.status = 400; res.set_content(R"({"error":"invalid JSON"})", "application/json"); return;
+        }
+
+        std::string goal = body.value("goal", "");
+        std::string model = body.value("model", "");
+        int timeout_s = body.value("timeout_s", 300);
+
+        if (goal.empty()) {
+            res.status = 400; res.set_content(R"({"error":"goal required"})", "application/json"); return;
+        }
+
+        std::string cmd = "codex exec \"" + goal + "\" --json --approval-mode full-auto";
+        if (!model.empty()) cmd += " --model " + model;
+
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "codex"}, {"goal", goal.substr(0, 100)}});
+
+        std::string output;
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) {
+            res.status = 500;
+            res.set_content(json({{"error","failed to spawn codex. Is it installed? npm i -g @openai/codex"}}).dump(), "application/json");
+            return;
+        }
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) { output += buf; if (output.size() > 500000) break; }
+        int exit_code = pclose(pipe);
+
+        json result;
+        result["runtime"] = "codex";
+        result["success"] = (exit_code == 0);
+        result["exit_code"] = exit_code;
+        result["content"] = output.substr(0, 50000);
+        result["goal"] = goal;
+        res.set_content(result.dump(), "application/json");
+    });
+
+    // GET /api/runtimes — list available runtimes
+    svr.Get("/api/runtimes", [this](const httplib::Request&, httplib::Response& res) {
+        json runtimes = json::array();
+
+        // CLOVE (always available)
+        runtimes.push_back({{"name", "clove"}, {"type", "built-in"}, {"status", "available"}, {"description", "CLOVE kernel RunEngine with 86 syscalls"}});
+
+        // Claude Code (check if installed)
+        int cc = system("which claude > /dev/null 2>&1");
+        runtimes.push_back({{"name", "claude-code"}, {"type", "subprocess"}, {"status", cc == 0 ? "available" : "not-installed"},
+            {"description", "Anthropic Claude Code — autonomous coding agent"}, {"install", "npm i -g @anthropic-ai/claude-code"}});
+
+        // Codex (check if installed)
+        int cx = system("which codex > /dev/null 2>&1");
+        runtimes.push_back({{"name", "codex"}, {"type", "subprocess"}, {"status", cx == 0 ? "available" : "not-installed"},
+            {"description", "OpenAI Codex — coding agent with sandboxed execution"}, {"install", "npm i -g @openai/codex"}});
+
+        // OpenClaw
+        bool oc = ctx_.openclaw != nullptr;
+        runtimes.push_back({{"name", "openclaw"}, {"type", "subprocess"}, {"status", oc ? "available" : "not-configured"},
+            {"description", "OpenClaw — conversational agent with channel integrations"}});
+
+        res.set_content(json({{"runtimes", runtimes}}).dump(), "application/json");
+    });
+
+    // ===================================================================
     // World Launch — run a multi-agent world from inline config
     // POST /api/worlds/launch  {"goal": "...", "world": "name", "agents": [{name, role, tools, budget}]}
     // ===================================================================
