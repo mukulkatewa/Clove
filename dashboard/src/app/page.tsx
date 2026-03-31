@@ -1,189 +1,229 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { getHealth, getCost, getHistory, getOpenClawStatus, getAudit } from '@/lib/api'
-import type { HealthResponse, CostResponse, HistoryEntry, OpenClawInstance, AuditEntry } from '@/lib/api'
+import { useEffect, useState, useRef } from 'react'
+import { getHealth, getCost, getAgentDefs, submitRun, streamFleet } from '@/lib/api'
+import type { HealthResponse, CostResponse, RunResponse, AgentDef } from '@/lib/api'
 import { useDemo } from '@/lib/demo-context'
-import { demoHealth, demoCost, demoRuns, demoOpenClaw, demoAudit } from '@/lib/demo-data'
+import { demoHealth, demoCost } from '@/lib/demo-data'
+import Link from 'next/link'
 
-export default function Overview() {
+const SUGGESTIONS = [
+  'Review my latest code changes for security issues',
+  'Research the AI agent market and compile a digest',
+  'Monitor api.example.com every 5 minutes',
+  'Find leads for B2B SaaS companies using AI agents',
+  'Audit dependencies for vulnerabilities',
+  'Create a daily standup summary from Slack',
+]
+
+const DEMO_AGENTS: AgentDef[] = [
+  { name: 'pr-reviewer', description: 'Reviews PRs for security', enabled: true, triggers: [{ type: 'webhook', source: 'github' }], connections: ['github'], action: { goal: 'Review PRs', tools: ['read_file', 'exec'], max_steps: 10 }, budget: { per_run: 0.30, daily_max: 10 } },
+  { name: 'api-monitor', description: 'Health checks every 5min', enabled: true, triggers: [{ type: 'cron', schedule: '*/5 * * * *' }], connections: [], action: { goal: 'Check API', tools: ['http'], max_steps: 3 }, budget: { per_run: 0.05, daily_max: 2 } },
+  { name: 'news-digest', description: 'AI news every morning', enabled: true, triggers: [{ type: 'cron', schedule: '0 8 * * MON-FRI' }], connections: ['slack'], action: { goal: 'News digest', tools: ['search', 'http'], max_steps: 12 }, budget: { per_run: 0.40, daily_max: 3 } },
+]
+
+export default function Home() {
   const { isDemo } = useDemo()
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [cost, setCost] = useState<CostResponse | null>(null)
-  const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [instances, setInstances] = useState<OpenClawInstance[]>([])
-  const [audit, setAudit] = useState<AuditEntry[]>([])
-  const [error, setError] = useState('')
+  const [agents, setAgents] = useState<AgentDef[]>([])
+  const [input, setInput] = useState('')
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<RunResponse | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const resultRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (isDemo) { setHealth(demoHealth() as any); setCost(demoCost() as any); setHistory(demoRuns() as any); setInstances(demoOpenClaw() as any); setAudit(demoAudit() as any); setError(''); return }
-    const load = () => {
-      getHealth().then(setHealth).catch(() => setError('offline'))
-      getCost().then(setCost).catch(() => {})
-      getHistory().then((r) => setHistory(r.runs || [])).catch(() => {})
-      getOpenClawStatus().then((r) => setInstances(r.instances || [])).catch(() => {})
-      getAudit(10).then(setAudit).catch(() => {})
+    if (isDemo) {
+      setHealth(demoHealth() as HealthResponse); setCost(demoCost() as CostResponse); setAgents(DEMO_AGENTS); return
     }
-    load()
-    const interval = setInterval(load, 5000)
-    return () => clearInterval(interval)
+    const load = () => {
+      getHealth().then(setHealth).catch(() => {})
+      getCost().then(setCost).catch(() => {})
+      getAgentDefs().then(r => setAgents(r.agents || [])).catch(() => {})
+    }
+    load(); const i = setInterval(load, 5000); return () => clearInterval(i)
   }, [isDemo])
 
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <div className="text-center">
-          <div className="w-12 h-12 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'var(--red-light)' }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>
-          </div>
-          <div className="text-[18px] font-semibold mb-2">Kernel Offline</div>
-          <p className="text-[13px] mb-5" style={{ color: 'var(--text-dim)' }}>Not reachable at localhost:8080</p>
-          <div className="inline-block card px-4 py-3">
-            <code className="mono text-[12px]" style={{ color: 'var(--text-secondary)' }}>./clove_kernel --sandbox --privacy --api</code>
-          </div>
-        </div>
-      </div>
-    )
+  const handleRun = async () => {
+    if (!input.trim() || running) return
+    setRunning(true); setResult(null); setElapsed(0)
+    const start = Date.now()
+    timerRef.current = setInterval(() => setElapsed(Date.now() - start), 100)
+
+    try {
+      const res = await submitRun({ goal: input.trim(), budget: 0.50, max_steps: 15 })
+      setResult(res)
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    } catch (e) {
+      setResult({ success: false, content: `Error: ${e}`, total_cost_usd: 0, total_tokens: 0, steps: 0, chain_id: '', step_log: [] })
+    } finally {
+      setRunning(false); if (timerRef.current) clearInterval(timerRef.current)
+    }
   }
 
-  const running = instances.filter((i) => i.state === 'running')
-  const totalCost = cost?.total_cost_usd ?? 0
+  const enabledAgents = agents.filter(a => a.enabled)
 
   return (
-    <div>
+    <div className="max-w-[860px] mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-2">
         <div>
-          <h2 className="text-[24px] font-semibold tracking-[-0.03em]">Welcome to Clove</h2>
-          <p className="text-[14px] mt-1" style={{ color: 'var(--text-dim)' }}>
-            {health ? `Kernel v${health.version} · ${health.syscall_count} syscalls · ${fmtUp(health.uptime_s)} uptime` : 'Connecting...'}
+          <h1 className="text-[26px] font-semibold tracking-[-0.03em]">Clove</h1>
+          <p className="text-[13px]" style={{ color: 'var(--text-dim)' }}>
+            {health ? `v${health.version} · ${enabledAgents.length} agents active · $${(cost?.total_cost_usd ?? 0).toFixed(2)} spent` : 'Connecting...'}
           </p>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: health ? 'var(--green-light)' : 'var(--red-light)' }}>
-          <span className="w-[7px] h-[7px] rounded-full" style={{ background: health ? 'var(--green)' : 'var(--red)' }} />
-          <span className="text-[12px] font-medium" style={{ color: health ? 'var(--green)' : 'var(--red)' }}>{health ? 'Running' : 'Offline'}</span>
-        </div>
+        {health && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: 'var(--green-light)' }}>
+            <span className="w-[6px] h-[6px] rounded-full" style={{ background: 'var(--green)' }} />
+            <span className="text-[11px] font-medium" style={{ color: 'var(--green)' }}>Running</span>
+          </div>
+        )}
       </div>
 
-      {/* Hero card + stats */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        {/* Hero kernel card */}
-        <div className="rounded-2xl p-6 text-white relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #e07628 0%, #f59e0b 50%, #fbbf24 100%)' }}>
-          <div className="absolute top-0 right-0 w-32 h-32 rounded-full opacity-10" style={{ background: 'white', transform: 'translate(30%, -30%)' }} />
-          <div className="text-[11px] uppercase tracking-[0.08em] opacity-70 mb-1">Kernel</div>
-          <div className="text-[28px] font-bold tracking-[-0.03em]">v{health?.version || '2.0.0'}</div>
-          <div className="text-[13px] opacity-70 mt-1">{health?.syscall_count || 86} syscalls registered</div>
-          <div className="flex items-center gap-4 mt-4 text-[12px] opacity-80">
-            <span>{running.length} agents active</span>
+      {/* Main input */}
+      <div className="card p-0 mt-6 mb-6 overflow-hidden">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="What do you want agents to do?"
+          rows={3}
+          className="w-full p-6 text-[16px] resize-none outline-none placeholder:opacity-30 leading-relaxed"
+          style={{ background: 'var(--bg-card)', color: 'var(--text)', border: 'none' }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) handleRun() }}
+        />
+        <div className="flex items-center justify-between px-6 py-3" style={{ background: 'var(--bg)', borderTop: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-3 text-[12px]" style={{ color: 'var(--text-dim)' }}>
+            <span>$0.50 budget</span>
             <span>·</span>
-            <span>{history.length} runs</span>
+            <span>15 max steps</span>
+            {running && <span className="tabular-nums font-medium" style={{ color: 'var(--accent)' }}>{(elapsed / 1000).toFixed(1)}s</span>}
+          </div>
+          <button onClick={handleRun} disabled={running || !input.trim()}
+            className="px-6 py-2.5 rounded-xl text-[13px] font-semibold text-white transition-all disabled:opacity-30 flex items-center gap-2"
+            style={{ background: 'var(--accent)' }}>
+            {running ? (
+              <><svg width="14" height="14" viewBox="0 0 24 24" className="animate-spin"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="30 70" strokeLinecap="round"/></svg>Running</>
+            ) : (
+              <>Run <kbd className="text-[9px] opacity-60 bg-white/10 px-1 rounded">⌘↵</kbd></>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Suggestions */}
+      {!input && !result && !running && (
+        <div className="mb-8">
+          <div className="flex flex-wrap gap-2">
+            {SUGGESTIONS.map((s, i) => (
+              <button key={i} onClick={() => setInput(s)}
+                className="px-3.5 py-2 rounded-xl text-[12px] transition-all hover:shadow-sm"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                {s}
+              </button>
+            ))}
           </div>
         </div>
+      )}
 
-        {/* Cost card */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] uppercase tracking-[0.06em] font-medium" style={{ color: 'var(--text-dim)' }}>Total Cost</span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg-raised)', color: 'var(--text-dim)' }}>All time</span>
+      {/* Loading */}
+      {running && (
+        <div className="card p-5 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--accent)' }} />
+            <span className="text-[14px] font-medium">Agent working...</span>
+            <span className="text-[12px] tabular-nums ml-auto" style={{ color: 'var(--text-dim)' }}>{(elapsed / 1000).toFixed(1)}s</span>
           </div>
-          <div className="text-[26px] font-bold tracking-[-0.03em] tabular-nums" style={{ color: totalCost > 0 ? 'var(--text)' : 'var(--text-dim)' }}>
-            ${totalCost.toFixed(2)}
-          </div>
-          {cost?.max_cost_usd ? (
-            <div className="mt-3">
-              <div className="flex justify-between text-[11px] mb-1" style={{ color: 'var(--text-dim)' }}>
-                <span>Budget</span><span>${cost.max_cost_usd.toFixed(2)}</span>
-              </div>
-              <div className="h-[5px] rounded-full overflow-hidden" style={{ background: 'var(--bg-raised)' }}>
-                <div className="h-full rounded-full transition-all" style={{ width: `${Math.min((totalCost / cost.max_cost_usd) * 100, 100)}%`, background: 'var(--accent)' }} />
-              </div>
+        </div>
+      )}
+
+      {/* Result */}
+      {result && (
+        <div ref={resultRef} className="card overflow-hidden mb-8">
+          <div className="flex items-center justify-between px-5 py-3" style={{ background: result.success ? 'var(--green-light)' : 'var(--red-light)' }}>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full" style={{ background: result.success ? 'var(--green)' : 'var(--red)' }} />
+              <span className="text-[13px] font-semibold" style={{ color: result.success ? 'var(--green)' : 'var(--red)' }}>
+                {result.success ? 'Done' : 'Failed'}
+              </span>
             </div>
-          ) : <div className="text-[12px] mt-2" style={{ color: 'var(--text-dim)' }}>No budget set</div>}
+            <div className="flex gap-3 text-[11px] tabular-nums font-medium" style={{ color: result.success ? 'var(--green)' : 'var(--red)' }}>
+              <span>${result.total_cost_usd.toFixed(4)}</span>
+              <span>{result.total_tokens.toLocaleString()} tokens</span>
+              <span>{result.steps} steps</span>
+              <span>{(elapsed / 1000).toFixed(1)}s</span>
+            </div>
+          </div>
+          <div className="p-5 text-[14px] leading-[1.7] whitespace-pre-wrap">{result.content}</div>
+          {result.step_log.length > 0 && (
+            <details className="group">
+              <summary className="px-5 py-2.5 text-[12px] font-medium cursor-pointer select-none" style={{ color: 'var(--text-dim)', borderTop: '1px solid var(--border)' }}>
+                {result.step_log.length} tool calls
+              </summary>
+              <div className="px-5 pb-4 space-y-1">
+                {result.step_log.map((s, i) => (
+                  <div key={i} className="flex items-start gap-2 text-[12px]">
+                    <span className="w-5 h-5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0" style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}>{s.step}</span>
+                    <span className="font-medium" style={{ color: 'var(--accent)' }}>{s.tool}</span>
+                    <span className="mono truncate" style={{ color: 'var(--text-dim)' }}>{typeof s.args === 'string' ? s.args : JSON.stringify(s.args)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
+      )}
 
-        {/* Agents card */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-2">
+      {/* Active agents */}
+      {enabledAgents.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-3">
             <span className="text-[11px] uppercase tracking-[0.06em] font-medium" style={{ color: 'var(--text-dim)' }}>Active Agents</span>
+            <Link href="/agents" className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>View all →</Link>
           </div>
-          <div className="text-[26px] font-bold tracking-[-0.03em] tabular-nums" style={{ color: running.length > 0 ? 'var(--green)' : 'var(--text-dim)' }}>
-            {running.length}
+          <div className="grid grid-cols-3 gap-2">
+            {enabledAgents.slice(0, 6).map(a => (
+              <Link key={a.name} href={`/agents`} className="card p-3.5 hover:shadow-md transition-all">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="w-[6px] h-[6px] rounded-full animate-pulse" style={{ background: 'var(--green)' }} />
+                  <span className="text-[12px] font-semibold truncate">{a.name}</span>
+                </div>
+                <div className="text-[11px] truncate" style={{ color: 'var(--text-dim)' }}>{a.description}</div>
+                <div className="flex items-center gap-2 mt-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>
+                  {a.triggers.map((t, i) => (
+                    <span key={i} className="px-1.5 py-0.5 rounded" style={{
+                      background: t.type === 'cron' ? 'var(--blue-light)' : t.type === 'webhook' ? 'var(--accent-light)' : 'var(--bg)',
+                      color: t.type === 'cron' ? 'var(--blue)' : t.type === 'webhook' ? 'var(--accent)' : 'var(--text-dim)',
+                    }}>
+                      {t.type === 'cron' ? t.schedule : t.type === 'webhook' ? t.source : 'manual'}
+                    </span>
+                  ))}
+                  <span className="ml-auto tabular-nums">${a.budget.per_run}/run</span>
+                </div>
+              </Link>
+            ))}
           </div>
-          <div className="text-[12px] mt-2" style={{ color: 'var(--text-dim)' }}>{instances.length} total instances</div>
-          {running.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-3">
-              {running.map((inst) => (
-                <span key={inst.id} className="text-[11px] px-2 py-0.5 rounded-full font-medium" style={{ background: 'var(--green-light)', color: 'var(--green)' }}>
-                  {inst.name}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
-      </div>
+      )}
 
-      {/* Recent runs */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[16px] font-semibold">Recent Runs</h3>
-          <span className="text-[12px]" style={{ color: 'var(--text-dim)' }}>{history.length} total</span>
+      {/* Quick stats */}
+      <div className="grid grid-cols-4 gap-2">
+        <div className="card px-4 py-3">
+          <div className="text-[9px] uppercase tracking-[0.08em] font-medium" style={{ color: 'var(--text-dim)' }}>Agents</div>
+          <div className="text-[18px] font-bold tabular-nums mt-0.5" style={{ color: 'var(--green)' }}>{enabledAgents.length}</div>
         </div>
-        <div className="card overflow-hidden">
-          {history.length === 0 ? (
-            <div className="py-14 text-center text-[13px]" style={{ color: 'var(--text-dim)' }}>No runs yet. Submit one from the Runs page.</div>
-          ) : (
-            <table className="w-full text-[13px]">
-              <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Name', 'Goal', 'Chain', 'Time'].map((h, i) => (
-                  <th key={h} className={`px-5 py-3 text-[11px] font-medium uppercase tracking-[0.06em] ${i === 3 ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-dim)', background: 'var(--bg)' }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {history.slice(0, 8).map((run, i) => (
-                  <tr key={i} className="hover:bg-[var(--bg)]" style={{ borderBottom: '1px solid var(--border-subtle)', transition: 'background 100ms' }}>
-                    <td className="px-5 py-3 mono text-[12px] font-medium" style={{ color: 'var(--accent)' }}>{run.name}</td>
-                    <td className="px-5 py-3 truncate max-w-xs" style={{ color: 'var(--text-secondary)' }}>{run.description}</td>
-                    <td className="px-5 py-3 mono text-[12px]" style={{ color: 'var(--text-dim)' }}>{run.chain_id.slice(0, 12)}</td>
-                    <td className="px-5 py-3 text-right text-[12px]" style={{ color: 'var(--text-dim)' }}>{new Date(run.created_at_ms).toLocaleTimeString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div className="card px-4 py-3">
+          <div className="text-[9px] uppercase tracking-[0.08em] font-medium" style={{ color: 'var(--text-dim)' }}>Cost</div>
+          <div className="text-[18px] font-bold tabular-nums mt-0.5" style={{ color: 'var(--accent)' }}>${(cost?.total_cost_usd ?? 0).toFixed(2)}</div>
         </div>
-      </div>
-
-      {/* Audit */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[16px] font-semibold">Recent Audit</h3>
+        <div className="card px-4 py-3">
+          <div className="text-[9px] uppercase tracking-[0.08em] font-medium" style={{ color: 'var(--text-dim)' }}>Requests</div>
+          <div className="text-[18px] font-bold tabular-nums mt-0.5">{cost?.total_requests ?? 0}</div>
         </div>
-        <div className="card overflow-hidden">
-          {audit.length === 0 ? (
-            <div className="py-14 text-center text-[13px]" style={{ color: 'var(--text-dim)' }}>No audit entries yet.</div>
-          ) : (
-            <table className="w-full text-[13px]">
-              <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Event', 'Category', 'Agent', 'Status', 'Time'].map((h, i) => (
-                  <th key={h} className={`px-5 py-3 text-[11px] font-medium uppercase tracking-[0.06em] ${i === 4 ? 'text-right' : 'text-left'}`} style={{ color: 'var(--text-dim)', background: 'var(--bg)' }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {audit.map((e) => (
-                  <tr key={e.id} className="hover:bg-[var(--bg)]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    <td className="px-5 py-3 mono text-[12px] font-medium">{e.event_type}</td>
-                    <td className="px-5 py-3" style={{ color: 'var(--text-secondary)' }}>{e.category}</td>
-                    <td className="px-5 py-3" style={{ color: 'var(--text-secondary)' }}>{e.agent_name || `#${e.agent_id}`}</td>
-                    <td className="px-5 py-3">
-                      <span className="text-[10px] font-semibold px-2 py-[3px] rounded-full" style={{ background: e.success ? 'var(--green-light)' : 'var(--red-light)', color: e.success ? 'var(--green)' : 'var(--red)' }}>
-                        {e.success ? 'OK' : 'FAIL'}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3 text-right text-[12px]" style={{ color: 'var(--text-dim)' }}>{new Date(e.timestamp).toLocaleTimeString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div className="card px-4 py-3">
+          <div className="text-[9px] uppercase tracking-[0.08em] font-medium" style={{ color: 'var(--text-dim)' }}>Uptime</div>
+          <div className="text-[18px] font-bold tabular-nums mt-0.5">{health ? fmtUp(health.uptime_s) : '—'}</div>
         </div>
       </div>
     </div>
@@ -191,7 +231,8 @@ export default function Overview() {
 }
 
 function fmtUp(s: number): string {
-  if (s > 86400) return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
-  if (s > 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
-  return `${Math.floor(s / 60)}m`
+  if (s > 86400) return `${Math.floor(s / 86400)}d`
+  if (s > 3600) return `${Math.floor(s / 3600)}h`
+  if (s > 60) return `${Math.floor(s / 60)}m`
+  return `${s}s`
 }
