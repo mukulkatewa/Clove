@@ -1484,9 +1484,17 @@ void ApiServer::setup_routes() {
         std::string goal = body.value("goal", "");
         int agent_count = body.value("agents", 3);
         double total_budget = body.value("budget", 2.0);
-        std::string model = body.value("model", ctx_.config.llm_model);
+        std::string default_model = body.value("model", ctx_.config.llm_model);
         int max_steps = body.value("max_steps", 15);
         auto tools = body.value("tools", std::vector<std::string>{});
+        std::string world_name = body.value("world", "fleet-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000));
+
+        // Per-agent configs (optional — if not provided, all agents use defaults)
+        json agent_configs = json::array();
+        if (body.contains("agent_configs") && body["agent_configs"].is_array()) {
+            agent_configs = body["agent_configs"];
+            agent_count = static_cast<int>(agent_configs.size());
+        }
 
         if (goal.empty()) {
             res.status = 400;
@@ -1521,6 +1529,12 @@ void ApiServer::setup_routes() {
                     sink.write(line.c_str(), line.size());
                 };
 
+                // Create a world for this fleet
+                uint32_t world_id = 0;
+                if (ctx_.world_engine) {
+                    world_id = ctx_.world_engine->create(world_name, {{"goal", goal}, {"agent_count", agent_count}});
+                }
+
                 // Fleet start event
                 safe_emit({
                     {"type", "fleet_start"},
@@ -1529,23 +1543,51 @@ void ApiServer::setup_routes() {
                         {"agent_count", agent_count},
                         {"total_budget_usd", total_budget},
                         {"per_agent_budget_usd", per_agent_budget},
+                        {"world", world_name},
+                        {"world_id", world_id},
                     }}
                 });
 
-                // Phase 1: Run N researcher agents in parallel
+                // Phase 1: Run N agents in parallel
                 std::vector<std::thread> threads;
                 std::vector<RunResult> results(agent_count);
                 std::atomic<int> completed{0};
 
                 for (int i = 0; i < agent_count; i++) {
                     threads.emplace_back([&, i]() {
+                        // Build per-agent config from agent_configs or defaults
+                        std::string agent_name = "agent-" + std::to_string(i + 1);
+                        std::string agent_model = default_model;
+                        std::string agent_role;
+                        double agent_budget = per_agent_budget;
+                        int agent_max_steps = max_steps;
+                        std::vector<std::string> agent_tools = tools;
+
+                        if (i < static_cast<int>(agent_configs.size())) {
+                            auto& ac = agent_configs[i];
+                            agent_name = ac.value("name", agent_name);
+                            agent_model = ac.value("model", default_model);
+                            agent_role = ac.value("role", "");
+                            agent_budget = ac.value("budget", per_agent_budget);
+                            agent_max_steps = ac.value("max_steps", max_steps);
+                            if (ac.contains("tools") && ac["tools"].is_array()) {
+                                agent_tools = ac["tools"].get<std::vector<std::string>>();
+                            }
+                        }
+
+                        // Build agent goal with role context
+                        std::string agent_goal = goal;
+                        if (!agent_role.empty()) {
+                            agent_goal = "YOUR ROLE: " + agent_role + "\n\nMISSION: " + goal;
+                        }
+
                         RunConfig cfg;
-                        cfg.goal = goal;
-                        cfg.model = model;
-                        cfg.budget_usd = per_agent_budget;
-                        cfg.max_steps = max_steps;
-                        cfg.allowed_tools = tools;
-                        cfg.agent_name = "agent-" + std::to_string(i + 1);
+                        cfg.goal = agent_goal;
+                        cfg.model = agent_model;
+                        cfg.budget_usd = agent_budget;
+                        cfg.max_steps = agent_max_steps;
+                        cfg.allowed_tools = agent_tools;
+                        cfg.agent_name = agent_name;
 
                         RunEngine engine(*openrouter, *gateway, *privacy, *audit,
                                          *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
@@ -1618,7 +1660,7 @@ void ApiServer::setup_routes() {
                         {"data", {{"message", "Synthesizing outputs from all agents..."}}}
                     });
 
-                    auto synth_resp = openrouter->chat(model, synth_prompt);
+                    auto synth_resp = openrouter->chat(default_model, synth_prompt);
                     synthesis = synth_resp.content;
                     synth_cost = synth_resp.usage.cost_usd;
                     total_cost += synth_cost;
