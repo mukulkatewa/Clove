@@ -635,115 +635,77 @@ async function cmdConnect(args: string[]): Promise<void> {
   console.log(c.dim(`  Restart kernel to activate: clove stop && clove start`))
 }
 
-// ── Agent Management ──────────────────────────────────────────────────
-
-const REGISTRY_PORT = 8090
+// ── Agent Management (via kernel /api/agent-defs) ─────────────────────
 
 async function cmdAgent(args: string[]): Promise<void> {
+  const cfg = loadConfig()
   const sub = args[0] || 'list'
 
   if (sub === 'list' || sub === 'ls') {
-    // Try registry first, fall back to local files
-    const agents = loadLocalAgents()
-    if (!agents.length) {
-      console.log(''); console.log(c.dim('  No agents defined.'))
-      console.log(c.dim('  Create one: clove agent create <name>'))
-      console.log(''); return
-    }
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const r = await api<{ agents: any[]; count: number }>(cfg.apiPort, '/api/agent-defs')
+    if (!r?.agents?.length) { console.log(''); console.log(c.dim('  No agents. Create: clove agent create <name>')); console.log(''); return }
     console.log(''); console.log(c.bold('  Agents'))
     console.log(c.dim('  ─────────────────────────────────────────────'))
-    for (const a of agents) {
+    for (const a of r.agents) {
       const status = a.enabled ? c.green('enabled') : c.dim('disabled')
-      const triggers = (a.triggers || []).map((t: Record<string, unknown>) => t.type).join(', ') || c.dim('manual')
-      console.log(`  ${c.cyan(a.name.padEnd(20))} ${status.padEnd(18)} ${c.dim(triggers.padEnd(16))} ${a.description?.slice(0, 40) || ''}`)
+      const triggers = (a.triggers || []).map((t: any) => t.type).join(', ') || 'manual'
+      console.log(`  ${c.cyan(String(a.name).padEnd(20))} ${status.padEnd(18)} ${c.dim(triggers.padEnd(16))} ${(a.description || '').slice(0, 40)}`)
     }
-    console.log('')
-    return
+    console.log(''); return
   }
 
   if (sub === 'create') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
     const name = args[1]; if (!name) { console.log('Usage: clove agent create <name>'); return }
-    const dir = join(USER_AGENTS, name); mkdirSync(dir, { recursive: true })
-    const agent = {
-      name,
-      description: '',
-      enabled: false,
-      connections: [],
-      triggers: [{ type: 'manual' }],
-      action: {
-        goal: 'Describe what this agent should do when triggered.',
-        tools: ['search', 'http', 'read_file', 'exec'],
-        max_steps: 10,
-      },
-      permissions: { can_exec: false, can_read: true, can_write: false, can_http: true, allowed_domains: [], allowed_paths: [] },
-      budget: { per_run: 0.20, daily_max: 5.0, daily_spent: 0, last_reset: new Date().toISOString().slice(0, 10) },
-      memory: [],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }
-    writeFileSync(join(dir, 'agent.json'), JSON.stringify(agent, null, 2))
-    console.log(c.green(`  Created agent: ${name}`))
-    console.log(c.dim(`  Config: ~/.clove/agents/${name}/agent.json`))
-    console.log(c.dim(`  Edit the config, then: clove agent enable ${name}`))
-    return
+    const agent = { name, description: '', enabled: false, connections: [], triggers: [{ type: 'manual' }],
+      action: { goal: 'Describe what this agent should do.', tools: ['search', 'http', 'read_file', 'exec'], max_steps: 10 },
+      budget: { per_run: 0.20, daily_max: 5.0 } }
+    await api(cfg.apiPort, '/api/agent-defs', 'POST', agent)
+    console.log(c.green(`  Created: ${name}`))
+    console.log(c.dim(`  Edit: clove agent show ${name}`)); return
   }
 
-  if (sub === 'enable') {
-    const name = args[1]; if (!name) { console.log('Usage: clove agent enable <name>'); return }
-    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
-    agent.enabled = true; agent.updated_at = new Date().toISOString()
-    writeFileSync(join(USER_AGENTS, name, 'agent.json'), JSON.stringify(agent, null, 2))
-    console.log(c.green(`  Enabled: ${name}`))
-    return
-  }
-
-  if (sub === 'disable') {
-    const name = args[1]; if (!name) { console.log('Usage: clove agent disable <name>'); return }
-    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
-    agent.enabled = false; agent.updated_at = new Date().toISOString()
-    writeFileSync(join(USER_AGENTS, name, 'agent.json'), JSON.stringify(agent, null, 2))
-    console.log(c.green(`  Disabled: ${name}`))
-    return
+  if (sub === 'enable' || sub === 'disable') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log(`Usage: clove agent ${sub} <name>`); return }
+    await api(cfg.apiPort, `/api/agent-defs/${name}`, 'PUT', { enabled: sub === 'enable' })
+    console.log(c.green(`  ${sub === 'enable' ? 'Enabled' : 'Disabled'}: ${name}`)); return
   }
 
   if (sub === 'run') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
     const name = args[1]; if (!name) { console.log('Usage: clove agent run <name>'); return }
-    const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Kernel not running.')); return }
-    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
     console.log(c.cyan(`  Running: ${name}`))
-    console.log(c.dim(`  ${agent.action.goal.slice(0, 60)}`))
-    console.log('')
-    await cmdRun(agent.action.goal, agent.budget.per_run)
-    return
+    const r = await api<any>(cfg.apiPort, `/api/agent-defs/${name}/run`, 'POST')
+    if (r) {
+      console.log(r.success ? c.green('  OK') : c.red('  FAILED'))
+      console.log(r.content?.slice(0, 200) || '')
+      console.log(c.dim(`  $${(r.total_cost_usd || 0).toFixed(4)} · ${r.steps || 0} steps`))
+    }; return
   }
 
   if (sub === 'show' || sub === 'info') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
     const name = args[1]; if (!name) { console.log('Usage: clove agent show <name>'); return }
-    const agent = loadAgent(name); if (!agent) { console.log(c.red(`Agent not found: ${name}`)); return }
-    console.log(''); console.log(c.bold(`  ${agent.name}`))
+    const a = await api<any>(cfg.apiPort, `/api/agent-defs/${name}`)
+    if (!a || a.error) { console.log(c.red(`Not found: ${name}`)); return }
+    console.log(''); console.log(c.bold(`  ${a.name}`))
     console.log(c.dim('  ─────────────────────────────────────'))
-    console.log(`  Status:      ${agent.enabled ? c.green('enabled') : c.dim('disabled')}`)
-    console.log(`  Description: ${agent.description || c.dim('none')}`)
-    console.log(`  Triggers:    ${agent.triggers.map((t: Record<string, unknown>) => `${t.type}${t.schedule ? ' ' + t.schedule : ''}`).join(', ')}`)
-    console.log(`  Tools:       ${agent.action.tools.join(', ')}`)
-    console.log(`  Connections: ${agent.connections.length ? agent.connections.join(', ') : c.dim('none')}`)
-    console.log(`  Budget:      $${agent.budget.per_run}/run, $${agent.budget.daily_max}/day (spent: $${agent.budget.daily_spent})`)
-    console.log(`  Max steps:   ${agent.action.max_steps}`)
-    console.log(`  Goal:`)
-    console.log(c.dim(`    ${agent.action.goal.slice(0, 200)}`))
-    console.log('')
-    return
+    console.log(`  Enabled:     ${a.enabled ? c.green('yes') : c.dim('no')}`)
+    console.log(`  Description: ${a.description || c.dim('none')}`)
+    console.log(`  Triggers:    ${(a.triggers || []).map((t: any) => `${t.type}${t.schedule ? ' ' + t.schedule : ''}`).join(', ')}`)
+    console.log(`  Tools:       ${a.action?.tools?.join(', ') || 'none'}`)
+    console.log(`  Budget:      $${a.budget?.per_run || '?'}/run, $${a.budget?.daily_max || '?'}/day`)
+    console.log(`  Goal:        ${c.dim((a.action?.goal || '').slice(0, 120))}`)
+    console.log(''); return
   }
 
   if (sub === 'delete' || sub === 'rm') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
     const name = args[1]; if (!name) { console.log('Usage: clove agent delete <name>'); return }
-    const dir = join(USER_AGENTS, name)
-    if (existsSync(dir)) {
-      const { rmSync } = await import('node:fs')
-      rmSync(dir, { recursive: true })
-      console.log(c.green(`  Deleted: ${name}`))
-    } else { console.log(c.red(`Agent not found: ${name}`)) }
-    return
+    await api(cfg.apiPort, `/api/agent-defs/${name}`, 'DELETE')
+    console.log(c.green(`  Deleted: ${name}`)); return
   }
 
   console.log('Usage: clove agent [list|create|enable|disable|run|show|delete] <name>')
@@ -766,6 +728,80 @@ function loadAgent(name: string): any | null {
   const p = join(USER_AGENTS, name, 'agent.json')
   if (!existsSync(p)) return null
   try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return null }
+}
+
+// ── Inference ──────────────────────────────────────────────────────────
+
+async function cmdInference(args: string[]): Promise<void> {
+  const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const sub = args[0] || 'show'
+  if (sub === 'show' || sub === 'status') {
+    const r = await api<any>(cfg.apiPort, '/api/inference')
+    if (!r) { console.log(c.dim('No inference config')); return }
+    console.log(''); console.log(c.bold('  Inference Gateway'))
+    console.log(c.dim('  ─────────────────────────────────────'))
+    console.log(`  Status:    ${r.enabled ? c.green('enabled') : c.dim('disabled')}`)
+    console.log(`  Model:     ${r.default_model || r.model || 'not set'}`)
+    console.log(`  Cost:      ${c.cyan('$' + (r.current_cost_usd || 0).toFixed(4))} / $${(r.max_cost_usd || 0).toFixed(2)} cap`)
+    console.log(`  Requests:  ${r.total_requests || 0}`)
+    if (r.allowed_models?.length) console.log(`  Models:    ${r.allowed_models.join(', ')}`)
+    console.log('')
+  } else if (sub === 'set') {
+    const key = args[1]; const val = args[2]
+    if (!key || !val) { console.log('Usage: clove inference set <model|max_cost> <value>'); return }
+    const body: any = {}
+    if (key === 'model') body.default_model = val
+    else if (key === 'max_cost') body.max_cost_usd = parseFloat(val)
+    await api(cfg.apiPort, '/api/inference', 'PUT', body)
+    console.log(c.green(`  Set ${key} = ${val}`))
+  } else { console.log('Usage: clove inference [show|set]') }
+}
+
+// ── Privacy ───────────────────────────────────────────────────────────
+
+async function cmdPrivacy(args: string[]): Promise<void> {
+  const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const text = args.join(' ')
+  if (!text) { console.log('Usage: clove privacy "text to scan for PII"'); return }
+  const r = await api<any>(cfg.apiPort, '/api/privacy/scan', 'POST', { text })
+  if (!r) { console.log(c.dim('Scan failed')); return }
+  if (r.contains_pii) {
+    console.log(c.red(`  ${r.match_count} PII found:`))
+    for (const m of (r.matches || [])) console.log(`  ${c.yellow(m.type)} at ${m.start}-${m.end}`)
+  } else { console.log(c.green('  No PII detected')) }
+}
+
+// ── Replay ────────────────────────────────────────────────────────────
+
+async function cmdReplay(args: string[]): Promise<void> {
+  const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const sub = args[0] || 'status'
+  if (sub === 'status') {
+    const r = await api<any>(cfg.apiPort, '/api/replay')
+    console.log(`  Recording: ${r?.recording ? c.red('YES') : c.dim('no')} · Entries: ${r?.entry_count || 0}`)
+  } else if (sub === 'start') {
+    await api(cfg.apiPort, '/api/replay/start', 'POST')
+    console.log(c.red('  Recording started'))
+  } else if (sub === 'stop') {
+    await api(cfg.apiPort, '/api/replay/stop', 'POST')
+    console.log(c.green('  Recording stopped'))
+  } else { console.log('Usage: clove replay [status|start|stop]') }
+}
+
+// ── Policy ────────────────────────────────────────────────────────────
+
+async function cmdPolicy(): Promise<void> {
+  const cfg = loadConfig(); if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const r = await api<any>(cfg.apiPort, '/api/policy/recommendations')
+  const recs = r?.recommendations || []
+  if (!recs.length) { console.log(c.green('  No policy recommendations — all good')); return }
+  console.log(''); console.log(c.bold(`  ${recs.length} Policy Recommendations`))
+  console.log(c.dim('  ─────────────────────────────────────────────'))
+  for (const rec of recs) {
+    const sev = rec.severity === 'critical' ? c.red(rec.severity) : rec.severity === 'high' ? c.red(rec.severity) : rec.severity === 'medium' ? c.yellow(rec.severity) : c.dim(rec.severity)
+    console.log(`  ${sev.padEnd(22)} ${rec.description.slice(0, 70)}`)
+  }
+  console.log('')
 }
 
 // ── MCP ────────────────────────────────────────────────────────────────
@@ -914,6 +950,21 @@ switch (cmd) {
     break
   case 'world':
     cmdWorld(args.slice(1))
+    break
+  case 'inference':
+  case 'inf':
+    cmdInference(args.slice(1))
+    break
+  case 'privacy':
+  case 'pii':
+    cmdPrivacy(args.slice(1))
+    break
+  case 'replay':
+  case 'rec':
+    cmdReplay(args.slice(1))
+    break
+  case 'policy':
+    cmdPolicy()
     break
   case 'recall':
   case 'memory':
