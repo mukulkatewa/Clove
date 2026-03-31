@@ -107,6 +107,7 @@ private:
     // Real tool implementations
     std::string tool_read_file(const std::string& path);
     std::string tool_write_file(const std::string& path, const std::string& content);
+    std::string tool_edit_file(const std::string& path, const std::string& old_string, const std::string& new_string);
     std::string tool_exec(const std::string& command);
     std::string tool_http(const std::string& url, const std::string& method, const std::string& body);
     std::string tool_search(const std::string& query, const std::string& model, double& cost, int& tokens);

@@ -119,6 +119,48 @@ std::string RunEngine::tool_write_file(const std::string& path, const std::strin
     return "wrote " + std::to_string(content.size()) + " bytes to " + path;
 }
 
+std::string RunEngine::tool_edit_file(const std::string& path, const std::string& old_string, const std::string& new_string) {
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_write) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] write permission denied";
+    }
+    if (!perms.can_write_path(path)) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_PATH_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] path not allowed: " + path;
+    }
+
+    // Read file
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return "[error] cannot read: " + path;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    // Find and replace
+    auto pos = content.find(old_string);
+    if (pos == std::string::npos) {
+        return "[error] old_string not found in " + path + ". Read the file first to get exact text.";
+    }
+
+    // Check uniqueness — warn if multiple matches
+    auto second = content.find(old_string, pos + 1);
+    if (second != std::string::npos) {
+        return "[error] old_string appears multiple times in " + path + ". Provide more context to make it unique.";
+    }
+
+    content.replace(pos, old_string.size(), new_string);
+
+    // Write back
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return "[error] cannot write: " + path;
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    out.close();
+
+    audit_.log(AuditCategory::SYSCALL, "FILE_EDIT", agent_id_, "", {{"path", path}, {"replaced_bytes", old_string.size()}, {"new_bytes", new_string.size()}});
+    return "edited " + path + ": replaced " + std::to_string(old_string.size()) + " bytes with " + std::to_string(new_string.size()) + " bytes";
+}
+
 std::string RunEngine::tool_exec(const std::string& command) {
     // Permission check
     auto& perms = permissions_.get_or_create(agent_id_);
@@ -359,6 +401,13 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
             {"content", {{"type", "string"}, {"description", "Content to write"}}}
         }}, {"required", json::array({"path", "content"})}});
 
+    add("edit_file", "Edit a file by replacing an exact string match. More reliable than rewriting the whole file. The old_string must appear exactly once.",
+        {{"type", "object"}, {"properties", {
+            {"path", {{"type", "string"}, {"description", "File path"}}},
+            {"old_string", {{"type", "string"}, {"description", "Exact text to find and replace"}}},
+            {"new_string", {{"type", "string"}, {"description", "Replacement text"}}}
+        }}, {"required", json::array({"path", "old_string", "new_string"})}});
+
     add("exec", "Execute a shell command and return stdout/stderr.",
         {{"type", "object"}, {"properties", {
             {"command", {{"type", "string"}, {"description", "Shell command to execute"}}}
@@ -447,6 +496,9 @@ std::string RunEngine::execute_tool(
 
     } else if (name == "write_file") {
         return tool_write_file(args.value("path", ""), args.value("content", ""));
+
+    } else if (name == "edit_file") {
+        return tool_edit_file(args.value("path", ""), args.value("old_string", ""), args.value("new_string", ""));
 
     } else if (name == "exec") {
         return tool_exec(args.value("command", ""));
@@ -640,7 +692,8 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
         "- exec: Run ANY shell command. Use it to explore (ls, find, cat, grep), install packages (pip, npm), "
         "run scripts, compile code, check processes, inspect logs. If a command fails, read the error and fix it.\n"
         "- read_file: Read file contents. Use it to understand code, configs, data files.\n"
-        "- write_file: Write or overwrite files. Use it to produce output, save results, create scripts.\n"
+        "- write_file: Create new files or overwrite existing ones.\n"
+        "- edit_file: Edit a file by replacing an exact string. More reliable than rewriting. Read the file first, then replace the exact text you want to change.\n"
         "- http: Make HTTP requests (GET/POST/PUT/DELETE). Use it to call APIs, fetch web pages, check endpoints.\n"
         "- search: Search the web for information.\n"
         "- store/fetch: Persistent key-value storage. Store intermediate results, share data with other agents.\n"
