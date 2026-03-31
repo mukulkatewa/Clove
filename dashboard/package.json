@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
+    "clean": "rm -rf .next node_modules/.cache",
+    "fresh": "rm -rf .next node_modules/.cache && next dev --port 3000",
     "build": "next build",
     "start": "next start"
   },
