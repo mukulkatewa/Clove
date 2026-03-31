@@ -14,8 +14,8 @@
  */
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
+import { homedir, platform } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -106,6 +106,15 @@ async function isRunning(port: number): Promise<boolean> {
   return h?.status === 'ok'
 }
 
+// ── Cross-platform open ─────────────────────────────────────────────────
+
+function openUrl(url: string): void {
+  try {
+    const cmd = platform() === 'darwin' ? 'open' : platform() === 'win32' ? 'start' : 'xdg-open'
+    execSync(`${cmd} ${url}`, { stdio: 'ignore' })
+  } catch {}
+}
+
 // ── Colors ──────────────────────────────────────────────────────────────
 
 const c = {
@@ -136,7 +145,8 @@ async function cmdStart(): Promise<void> {
     console.log(c.dim('     git clone https://github.com/aniiiiXD/Clove.git'))
     console.log(c.dim('     cd Clove && git checkout v2'))
     console.log(c.dim('     mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release'))
-    console.log(c.dim('     cmake --build . -j$(sysctl -n hw.ncpu)'))
+    const cores = platform() === 'darwin' ? '$(sysctl -n hw.ncpu)' : '$(nproc)'
+    console.log(c.dim(`     cmake --build . -j${cores}`))
     console.log('')
     console.log('  2. Set the path:')
     console.log(c.dim('     clove config set kernelPath /path/to/clove_kernel'))
@@ -182,7 +192,7 @@ async function cmdStart(): Promise<void> {
       console.log('')
 
       // Open dashboard
-      try { execSync(`open http://localhost:${cfg.apiPort}/dashboard`, { stdio: 'ignore' }) } catch {}
+      openUrl(`http://localhost:${cfg.apiPort}/dashboard`)
       return
     }
     await new Promise(r => setTimeout(r, 200))
@@ -195,7 +205,7 @@ async function cmdStop(): Promise<void> {
     const pid = parseInt(readFileSync(PID_FILE, 'utf-8').trim(), 10)
     process.kill(pid, 'SIGTERM')
     console.log(c.green(`Stopped`) + c.dim(` (PID ${pid})`))
-    try { require('fs').unlinkSync(PID_FILE) } catch {}
+    try { unlinkSync(PID_FILE) } catch {}
   } catch {
     try {
       execSync('pkill -f clove_kernel', { stdio: 'ignore' })
@@ -382,7 +392,7 @@ async function cmdDashboard(): Promise<void> {
     return
   }
   console.log(`  Opening http://localhost:${cfg.apiPort}/dashboard`)
-  try { execSync(`open http://localhost:${cfg.apiPort}/dashboard`, { stdio: 'ignore' }) } catch {}
+  openUrl(`http://localhost:${cfg.apiPort}/dashboard`)
 }
 
 async function cmdConfig(args: string[]): Promise<void> {

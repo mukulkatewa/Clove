@@ -33,6 +33,15 @@ function check(cmd, name) {
   }
 }
 
+function checkSilent(cmd) {
+  try {
+    execSync(`which ${cmd}`, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function run() {
   console.log('')
   console.log(b(c('  CLOVE — Installing kernel')))
@@ -65,7 +74,22 @@ function run() {
       console.log(d('    xcode-select --install'))
       console.log(d('    brew install cmake openssl curl sqlite3'))
     } else {
-      console.log(d('    sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev libsqlite3-dev'))
+      // Detect Linux package manager
+      const hasApt = checkSilent('apt')
+      const hasDnf = checkSilent('dnf')
+      const hasPacman = checkSilent('pacman')
+      const hasZypper = checkSilent('zypper')
+      if (hasApt) {
+        console.log(d('    sudo apt install cmake g++ libcurl4-openssl-dev libssl-dev libsqlite3-dev'))
+      } else if (hasDnf) {
+        console.log(d('    sudo dnf install cmake gcc-c++ libcurl-devel openssl-devel sqlite-devel'))
+      } else if (hasPacman) {
+        console.log(d('    sudo pacman -S cmake gcc curl openssl sqlite'))
+      } else if (hasZypper) {
+        console.log(d('    sudo zypper install cmake gcc-c++ libcurl-devel libopenssl-devel sqlite3-devel'))
+      } else {
+        console.log(d('    Install: cmake, g++, libcurl-dev, openssl-dev, sqlite3-dev'))
+      }
     }
     console.log('')
     console.log(d('  Then run: clove build'))
@@ -141,7 +165,8 @@ function buildFromSource(sourceDir) {
     console.log(d(`    cd ${sourceDir}`))
     console.log(d('    mkdir build && cd build'))
     console.log(d('    cmake .. -DCMAKE_BUILD_TYPE=Release'))
-    console.log(d('    cmake --build . -j$(nproc)'))
+    const coresCmd = platform() === 'darwin' ? '$(sysctl -n hw.ncpu)' : '$(nproc)'
+    console.log(d(`    cmake --build . -j${coresCmd}`))
   }
 }
 

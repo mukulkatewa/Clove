@@ -1,19 +1,34 @@
 {
-  "name": "@clove/cli",
-  "version": "0.1.0",
+  "name": "@cloveos/cli",
+  "version": "0.2.0",
   "description": "CLOVE — Run, govern, and scale AI agent fleets from your terminal",
   "type": "module",
   "bin": {
     "clove": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json",
     "dev": "tsc --watch",
+    "prepublishOnly": "npm run build",
     "postinstall": "node scripts/postinstall.js"
   },
-  "files": ["dist", "scripts"],
-  "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw", "llm"],
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ],
+  "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw", "llm", "agent-os", "cli", "linux"],
   "license": "MIT",
+  "author": "aniiiixd <aniruddh302004@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aniiiiXD/Clove.git"
+  },
+  "homepage": "https://github.com/aniiiiXD/Clove",
+  "bugs": {
+    "url": "https://github.com/aniiiiXD/Clove/issues"
+  },
+  "os": ["linux", "darwin"],
   "engines": {
     "node": ">=22.0.0"
   },
