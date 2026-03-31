@@ -2510,6 +2510,108 @@ void ApiServer::setup_routes() {
     });
 
     // ===================================================================
+    // Inbound Webhook — receive events from GitHub, Slack, PagerDuty, etc.
+    // Matches events to agent definitions with webhook triggers and runs them.
+    // ===================================================================
+    svr.Post("/api/events/ingest", [this](const httplib::Request& req, httplib::Response& res) {
+        json body;
+        try { body = json::parse(req.body); } catch (...) { body = json::object(); }
+
+        std::string source = req.get_header_value("X-GitHub-Event").empty()
+            ? (req.get_header_value("X-Event-Source").empty() ? body.value("source", "unknown") : req.get_header_value("X-Event-Source"))
+            : "github";
+        std::string event_type = req.get_header_value("X-GitHub-Event").empty()
+            ? body.value("type", "generic")
+            : req.get_header_value("X-GitHub-Event");
+
+        // Log the inbound event
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "WEBHOOK_RECEIVED", 0, "",
+            {{"source", source}, {"event_type", event_type}});
+
+        // Find matching agent definitions
+        auto keys = ctx_.state_store.keys("agent-def:", 0);
+        json triggered = json::array();
+
+        for (const auto& key : keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            auto def = val.value();
+            if (!def.value("enabled", false)) continue;
+
+            auto triggers = def.value("triggers", json::array());
+            for (const auto& trigger : triggers) {
+                if (trigger.value("type", "") != "webhook") continue;
+                std::string trig_source = trigger.value("source", "");
+                if (!trig_source.empty() && trig_source != source) continue;
+
+                // Match — run the agent
+                auto action = def.value("action", json::object());
+                std::string goal = action.value("goal", "");
+                // Replace {{event}} with the webhook payload
+                auto event_str = body.dump();
+                size_t pos;
+                while ((pos = goal.find("{{event}}")) != std::string::npos) {
+                    goal.replace(pos, 9, event_str.substr(0, 2000));
+                }
+                while ((pos = goal.find("{{event.source}}")) != std::string::npos) {
+                    goal.replace(pos, 16, source);
+                }
+                while ((pos = goal.find("{{event.type}}")) != std::string::npos) {
+                    goal.replace(pos, 14, event_type);
+                }
+
+                auto budget_obj = def.value("budget", json::object());
+                double budget = budget_obj.value("per_run", 0.5);
+                int max_steps = action.value("max_steps", 10);
+                auto tools = action.value("tools", std::vector<std::string>{});
+
+                RunConfig cfg;
+                cfg.goal = goal;
+                cfg.budget_usd = budget;
+                cfg.max_steps = max_steps;
+                cfg.allowed_tools = tools;
+                cfg.agent_name = def.value("name", "webhook-agent");
+                cfg.model = action.value("model", ctx_.config.llm_model);
+
+                // Run asynchronously (don't block the webhook response)
+                auto* openrouter = ctx_.openrouter;
+                auto* gateway = &ctx_.inference_gateway;
+                auto* privacy = &ctx_.privacy_filter;
+                auto* audit = &ctx_.audit_logger;
+                auto* state = &ctx_.state_store;
+                auto* perms = &ctx_.permissions_store;
+                auto* artifacts = ctx_.artifact_store;
+                auto* chains = ctx_.chain_store;
+                auto* memory = ctx_.memory_blocks;
+                auto* mcp = ctx_.mcp_bridge;
+                auto* assembler = ctx_.assembler;
+                auto* config = &ctx_.config;
+
+                std::thread([=]() {
+                    RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                                     *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
+                    engine.execute(cfg);
+                }).detach();
+
+                triggered.push_back({
+                    {"agent", def.value("name", "")},
+                    {"trigger_source", source},
+                    {"trigger_type", event_type},
+                });
+                break; // Only trigger once per agent
+            }
+        }
+
+        json resp;
+        resp["received"] = true;
+        resp["source"] = source;
+        resp["event_type"] = event_type;
+        resp["agents_triggered"] = triggered.size();
+        resp["triggered"] = triggered;
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // ===================================================================
     // OpenClaw Module — spawn and manage OpenClaw instances
     // ===================================================================
 
