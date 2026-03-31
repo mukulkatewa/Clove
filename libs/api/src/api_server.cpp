@@ -2510,6 +2510,125 @@ void ApiServer::setup_routes() {
     });
 
     // ===================================================================
+    // World Launch — run a multi-agent world from inline config
+    // POST /api/worlds/launch  {"goal": "...", "world": "name", "agents": [{name, role, tools, budget}]}
+    // ===================================================================
+    svr.Post("/api/worlds/launch", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured"})", "application/json");
+            return;
+        }
+
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res.status = 400; res.set_content(R"({"error":"invalid JSON"})", "application/json"); return;
+        }
+
+        std::string goal = body.value("goal", "");
+        std::string world_name = body.value("world", "world-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000));
+        json agent_configs = body.value("agents", json::array());
+        double total_budget = body.value("budget", 2.0);
+
+        if (goal.empty() || agent_configs.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"goal and agents array are required"})", "application/json");
+            return;
+        }
+
+        // Create world
+        uint32_t world_id = 0;
+        if (ctx_.world_engine) {
+            world_id = ctx_.world_engine->create(world_name, {{"goal", goal}, {"agent_count", agent_configs.size()}});
+        }
+
+        // Run each agent synchronously and collect results
+        int agent_count = static_cast<int>(agent_configs.size());
+        double per_budget = total_budget / std::max(agent_count, 1);
+        json agent_results = json::array();
+        double total_cost = 0;
+        int total_tokens = 0;
+        int total_steps = 0;
+        bool all_success = true;
+
+        for (int i = 0; i < agent_count; i++) {
+            auto& ac = agent_configs[i];
+            std::string agent_name = ac.value("name", "agent-" + std::to_string(i + 1));
+            std::string role = ac.value("role", "");
+            double budget = ac.value("budget", per_budget);
+            int max_steps = ac.value("max_steps", 10);
+            auto tools = ac.value("tools", std::vector<std::string>{});
+            std::string model = ac.value("model", ctx_.config.llm_model);
+
+            std::string agent_goal = goal;
+            if (!role.empty()) agent_goal = "YOUR ROLE: " + role + "\n\nMISSION: " + goal;
+
+            RunConfig cfg;
+            cfg.goal = agent_goal;
+            cfg.model = model;
+            cfg.budget_usd = budget;
+            cfg.max_steps = max_steps;
+            cfg.allowed_tools = tools;
+            cfg.agent_name = agent_name;
+
+            RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+                             ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
+                             ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
+                             ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+
+            auto result = engine.execute(cfg);
+
+            total_cost += result.total_cost_usd;
+            total_tokens += result.total_tokens;
+            total_steps += result.steps;
+            if (!result.success) all_success = false;
+
+            agent_results.push_back({
+                {"agent", agent_name},
+                {"role", role},
+                {"success", result.success},
+                {"content", result.content.substr(0, 2000)},
+                {"cost_usd", result.total_cost_usd},
+                {"steps", result.steps},
+            });
+        }
+
+        // Synthesize if multiple agents
+        std::string synthesis;
+        if (agent_count > 1) {
+            std::string synth_prompt = "Synthesize these " + std::to_string(agent_count) + " agent outputs into one coherent result:\n\n";
+            for (const auto& ar : agent_results) {
+                synth_prompt += "--- " + ar.value("agent", "") + " (" + ar.value("role", "") + ") ---\n";
+                synth_prompt += ar.value("content", "") + "\n\n";
+            }
+            auto synth_resp = ctx_.openrouter->chat(ctx_.config.llm_model, synth_prompt);
+            synthesis = synth_resp.content;
+            total_cost += synth_resp.usage.cost_usd;
+            total_tokens += synth_resp.usage.total_tokens;
+            ctx_.inference_gateway.record_cost(synth_resp.usage.cost_usd);
+        } else if (agent_count == 1) {
+            synthesis = agent_results[0].value("content", "");
+        }
+
+        // Destroy world if auto_destroy
+        if (ctx_.world_engine && body.value("auto_destroy", true)) {
+            ctx_.world_engine->destroy(world_id);
+        }
+
+        json resp;
+        resp["success"] = all_success;
+        resp["world"] = world_name;
+        resp["world_id"] = world_id;
+        resp["agent_count"] = agent_count;
+        resp["total_cost_usd"] = total_cost;
+        resp["total_tokens"] = total_tokens;
+        resp["total_steps"] = total_steps;
+        resp["synthesis"] = synthesis.substr(0, 3000);
+        resp["agents"] = agent_results;
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    // ===================================================================
     // Inbound Webhook — receive events from GitHub, Slack, PagerDuty, etc.
     // Matches events to agent definitions with webhook triggers and runs them.
     // ===================================================================

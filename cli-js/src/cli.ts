@@ -278,14 +278,15 @@ async function cmdRun(goal: string, budget = 0.50): Promise<void> {
   console.log(c.dim(`${result.success ? c.green('OK') : c.red('FAILED')} | ${result.steps} steps | ${result.total_tokens} tokens | $${result.total_cost_usd.toFixed(6)}`))
 }
 
-async function cmdFleet(goal: string, agents = 3, budget = 1.0): Promise<void> {
+async function cmdFleet(goal: string, agents = 3, budget = 1.0, world?: string): Promise<void> {
   const cfg = loadConfig()
   if (!await isRunning(cfg.apiPort)) {
     console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start'))
     return
   }
 
-  console.log(c.cyan(`Launching ${agents}-agent fleet...`))
+  const worldName = world || `fleet-${Date.now() % 100000}`
+  console.log(c.cyan(`Launching ${agents}-agent fleet in world "${worldName}"...`))
   console.log(c.dim(`  Goal: ${goal}`))
   console.log(c.dim(`  Budget: $${budget}`))
   console.log('')
@@ -293,7 +294,7 @@ async function cmdFleet(goal: string, agents = 3, budget = 1.0): Promise<void> {
   const res = await fetch(`http://localhost:${cfg.apiPort}/api/fleet`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goal, agents, budget }),
+    body: JSON.stringify({ goal, agents, budget, world: worldName }),
   })
 
   const reader = res.body?.getReader()
@@ -982,8 +983,10 @@ switch (cmd) {
     const n = nIdx >= 0 ? parseInt(args[nIdx + 1]) : 3
     const bIdx = args.indexOf('--budget')
     const b = bIdx >= 0 ? parseFloat(args[bIdx + 1]) : 1.0
-    if (!goal) { console.log('Usage: clove fleet "your goal" [-n 3] [--budget 1.0]'); break }
-    cmdFleet(goal, n, b)
+    const wIdx = args.indexOf('--world')
+    const w = wIdx >= 0 ? args[wIdx + 1] : undefined
+    if (!goal) { console.log('Usage: clove fleet "your goal" [-n 3] [--budget 1.0] [--world name]'); break }
+    cmdFleet(goal, n, b, w)
     break
   }
   case 'templates':
