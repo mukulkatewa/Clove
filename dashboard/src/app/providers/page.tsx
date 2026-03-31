@@ -1,6 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useDemo } from '@/lib/demo-context'
+
+const API = process.env.NEXT_PUBLIC_API_URL || ''
 
 interface Provider {
   id: string
@@ -99,6 +101,12 @@ const QUALITY_COLORS: Record<string, string> = { high: 'var(--green)', medium: '
 export default function ProvidersPage() {
   const { isDemo } = useDemo()
   const [providers] = useState<Provider[]>(PROVIDERS)
+  const [inferenceConfig, setInferenceConfig] = useState<{ default_model?: string; allowed_models?: string[]; max_cost_usd?: number; current_cost_usd?: number } | null>(null)
+
+  useEffect(() => {
+    if (isDemo) return
+    fetch(`${API}/api/inference`).then(r => r.json()).then(setInferenceConfig).catch(() => {})
+  }, [isDemo])
   const [expanded, setExpanded] = useState<string | null>(null)
   const [view, setView] = useState<'providers' | 'models'>('providers')
 
