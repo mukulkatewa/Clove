@@ -355,6 +355,129 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
+    // Agent Definitions (persistent registry via state store)
+    // GET  /api/agent-defs      — list all definitions
+    // POST /api/agent-defs      — create definition
+    // GET  /api/agent-defs/:name — get one
+    // PUT  /api/agent-defs/:name — update
+    // DELETE /api/agent-defs/:name — delete
+    // POST /api/agent-defs/:name/run — manually trigger
+    // -----------------------------------------------------------------------
+    svr.Get("/api/agent-defs", [this](const httplib::Request&, httplib::Response& res) {
+        auto keys = ctx_.state_store.keys("agent-def:", 0);
+        json agents = json::array();
+        for (const auto& key : keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (val.has_value()) {
+                try { agents.push_back(json::parse(val.value().dump())); } catch (...) {}
+            }
+        }
+        json resp;
+        resp["agents"] = agents;
+        resp["count"] = agents.size();
+        res.set_content(resp.dump(), "application/json");
+    });
+
+    svr.Post("/api/agent-defs", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            if (name.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"name is required"})", "application/json");
+                return;
+            }
+            body["created_at"] = body.value("created_at", "");
+            body["updated_at"] = "";
+            ctx_.state_store.store("agent-def:" + name, body, 0);
+            res.status = 201;
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Get(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        auto val = ctx_.state_store.fetch("agent-def:" + name, 0);
+        if (val.has_value()) {
+            res.set_content(val.value().dump(), "application/json");
+        } else {
+            res.status = 404;
+            res.set_content(R"({"error":"agent definition not found"})", "application/json");
+        }
+    });
+
+    svr.Put(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            std::string name = req.matches[1];
+            auto body = json::parse(req.body);
+            body["name"] = name;
+            ctx_.state_store.store("agent-def:" + name, body, 0);
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Delete(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        ctx_.state_store.erase("agent-def:" + name, 0);
+        res.set_content(R"({"success":true})", "application/json");
+    });
+
+    // Manually trigger a defined agent
+    svr.Post(R"(/api/agent-defs/([^/]+)/run)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string name = req.matches[1];
+        auto val = ctx_.state_store.fetch("agent-def:" + name, 0);
+        if (!val.has_value()) {
+            res.status = 404;
+            res.set_content(R"({"error":"agent definition not found"})", "application/json");
+            return;
+        }
+        auto def = val.value();
+        auto action = def.value("action", json::object());
+        std::string goal = action.value("goal", "");
+        double budget = 0.5;
+        auto budget_obj = def.value("budget", json::object());
+        budget = budget_obj.value("per_run", 0.5);
+        int max_steps = action.value("max_steps", 10);
+        auto tools = action.value("tools", std::vector<std::string>{});
+
+        if (goal.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"agent has no goal defined"})", "application/json");
+            return;
+        }
+
+        RunConfig cfg;
+        cfg.goal = goal;
+        cfg.budget_usd = budget;
+        cfg.max_steps = max_steps;
+        cfg.allowed_tools = tools;
+        cfg.agent_name = name;
+        cfg.model = action.value("model", ctx_.config.llm_model);
+
+        RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+                         ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
+                         ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
+                         ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+
+        auto result = engine.execute(cfg);
+        json j;
+        j["success"] = result.success;
+        j["content"] = result.content;
+        j["total_cost_usd"] = result.total_cost_usd;
+        j["total_tokens"] = result.total_tokens;
+        j["steps"] = result.steps;
+        j["chain_id"] = result.chain_id;
+        j["agent_name"] = name;
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
     // Agent metrics
     // -----------------------------------------------------------------------
     svr.Get(R"(/api/agents/(\d+)/metrics)", [this](const httplib::Request& req, httplib::Response& res) {
