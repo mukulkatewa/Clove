@@ -748,22 +748,64 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             {"cost_usd", result.total_cost_usd},
         });
 
-        // Observation masking (JetBrains "Complexity Trap", NeurIPS 2025):
-        // Compress tool outputs older than 2 steps. Don't summarize — just truncate.
-        // Research shows this halves cost with equal or better quality.
+        // Auto-compact: when conversation grows large, summarize old tool outputs
+        // instead of just truncating. Uses LLM for smart compression when context
+        // exceeds threshold, falls back to truncation for smaller overages.
         if (result.steps > 2) {
+            // Estimate context size
+            size_t total_chars = 0;
+            for (const auto& m : messages) total_chars += m.value("content", "").size();
+
+            bool use_llm_compact = total_chars > 30000 && result.total_cost_usd < cfg.budget_usd * 0.7;
             int tool_msg_count = 0;
-            for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
-                if ((*it).value("role", "") == "tool") {
-                    tool_msg_count++;
-                    if (tool_msg_count > 2) {
-                        // Compress old tool outputs
-                        std::string content = (*it).value("content", "");
-                        if (content.size() > 200) {
-                            std::string first_line = content.substr(0, content.find('\n'));
-                            if (first_line.size() > 100) first_line = first_line.substr(0, 100);
-                            (*it)["content"] = "[" + first_line + "... " +
-                                std::to_string(content.size()) + " chars truncated]";
+
+            if (use_llm_compact && result.steps > 4) {
+                // LLM-based auto-compact: summarize old messages into a compact summary
+                std::string history_to_compact;
+                int compacted = 0;
+                for (size_t idx = 1; idx < messages.size() - 4; idx++) { // Keep first (system) and last 4
+                    auto& m = messages[idx];
+                    if (m.value("role", "") == "tool" || m.value("role", "") == "assistant") {
+                        history_to_compact += m.value("role", "") + ": " + m.value("content", "").substr(0, 500) + "\n";
+                        compacted++;
+                    }
+                }
+
+                if (compacted > 3 && !history_to_compact.empty()) {
+                    std::string compact_prompt = "Summarize this agent conversation history into bullet points. "
+                        "Preserve: key findings, actions taken, errors encountered, data discovered. "
+                        "Discard: verbose tool output, redundant info. Be brief.\n\n" + history_to_compact;
+
+                    auto compact_resp = openrouter_.chat(cfg.model, compact_prompt);
+                    if (!compact_resp.content.empty()) {
+                        result.total_cost_usd += compact_resp.usage.cost_usd;
+                        result.total_tokens += compact_resp.usage.total_tokens;
+                        gateway_.record_cost(compact_resp.usage.cost_usd);
+
+                        // Replace old messages with summary
+                        json new_messages = json::array();
+                        new_messages.push_back(messages[0]); // system
+                        new_messages.push_back({{"role", "assistant"}, {"content", "[Auto-compact summary of previous " + std::to_string(compacted) + " messages]\n" + compact_resp.content}});
+                        // Keep last 4 messages
+                        for (size_t idx = messages.size() > 4 ? messages.size() - 4 : 1; idx < messages.size(); idx++) {
+                            new_messages.push_back(messages[idx]);
+                        }
+                        messages = new_messages;
+                    }
+                }
+            } else {
+                // Simple truncation for smaller contexts
+                for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+                    if ((*it).value("role", "") == "tool") {
+                        tool_msg_count++;
+                        if (tool_msg_count > 2) {
+                            std::string content = (*it).value("content", "");
+                            if (content.size() > 200) {
+                                std::string first_line = content.substr(0, content.find('\n'));
+                                if (first_line.size() > 100) first_line = first_line.substr(0, 100);
+                                (*it)["content"] = "[" + first_line + "... " +
+                                    std::to_string(content.size()) + " chars truncated]";
+                            }
                         }
                     }
                 }

@@ -843,6 +843,68 @@ async function cmdMcp(args: string[]): Promise<void> {
   }
 }
 
+// ── Analyze ───────────────────────────────────────────────────────────
+
+async function cmdAnalyze(path: string): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const targetPath = path || '.'
+  console.log(c.cyan(`  Analyzing project at ${targetPath}...`))
+  console.log('')
+
+  // Gather project info via a lightweight agent run
+  const result = await api<{
+    success: boolean; content: string; total_cost_usd: number; steps: number
+  }>(cfg.apiPort, '/api/run', 'POST', {
+    goal: `Analyze the project at ${targetPath}. Do this efficiently:
+1. Run "find ${targetPath} -type f -name '*.ts' -o -name '*.py' -o -name '*.js' -o -name '*.go' -o -name '*.rs' -o -name '*.cpp' | head -30" to see what languages are used.
+2. Run "cat ${targetPath}/package.json 2>/dev/null || cat ${targetPath}/requirements.txt 2>/dev/null || cat ${targetPath}/Cargo.toml 2>/dev/null || echo 'no manifest'" to check dependencies.
+3. Run "ls ${targetPath}/.github/workflows/ 2>/dev/null || echo 'no CI'" to check CI.
+4. Run "wc -l $(find ${targetPath} -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -20) 2>/dev/null | tail -1" for LOC estimate.
+
+Based on what you find, output ONLY a JSON array of recommended agents:
+[
+  {"name": "agent-name", "description": "what it does", "trigger": "cron/webhook/manual", "tools": ["tool1", "tool2"], "why": "reason this agent would help"}
+]
+
+Be practical. Only suggest agents that would genuinely help this specific project. Max 5 agents.`,
+    budget: 0.15,
+    max_steps: 8,
+    tools: ['exec', 'read_file'],
+    agent_name: 'project-analyzer',
+  })
+
+  if (!result?.success) {
+    console.log(c.red('  Analysis failed'))
+    console.log(c.dim(`  ${result?.content?.slice(0, 200) || 'Unknown error'}`))
+    return
+  }
+
+  console.log(c.bold('  Recommended Agents'))
+  console.log(c.dim('  ─────────────────────────────────────────────'))
+
+  // Try to parse JSON from response
+  try {
+    const jsonMatch = result.content.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      const agents = JSON.parse(jsonMatch[0])
+      for (const a of agents) {
+        console.log(`  ${c.cyan(a.name.padEnd(22))} ${a.description}`)
+        console.log(`  ${c.dim('trigger:' + (a.trigger || 'manual').padEnd(10))} tools: ${(a.tools || []).join(', ')}`)
+        console.log(`  ${c.dim('→ ' + (a.why || ''))}`)
+        console.log('')
+      }
+      console.log(c.dim(`  Create: clove agent create <name>`))
+      console.log(c.dim(`  Cost: $${result.total_cost_usd.toFixed(4)}`))
+    } else {
+      console.log(result.content)
+    }
+  } catch {
+    console.log(result.content)
+  }
+  console.log('')
+}
+
 // ── World Commands ─────────────────────────────────────────────────────
 
 async function cmdWorld(args: string[]): Promise<void> {
@@ -965,6 +1027,10 @@ switch (cmd) {
     break
   case 'policy':
     cmdPolicy()
+    break
+  case 'analyze':
+  case 'scan':
+    cmdAnalyze(args[1] || '.')
     break
   case 'recall':
   case 'memory':
