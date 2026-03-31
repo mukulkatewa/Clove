@@ -99,7 +99,7 @@
         "transform": "lodash/{{member}}"
       }
     },
-    "outputFileTracingRoot": "/Users/anixd/Documents/clove-v2/dashboard",
+    "outputFileTracingRoot": "/Users/anixd/Documents/clove-v2",
     "experimental": {
       "useSkewCookie": false,
       "cacheLife": {
@@ -289,7 +289,7 @@
     "bundlePagesRouterDependencies": false,
     "configFileName": "next.config.ts",
     "turbopack": {
-      "root": "/Users/anixd/Documents/clove-v2/dashboard"
+      "root": "/Users/anixd/Documents/clove-v2"
     },
     "_originalRewrites": {
       "beforeFiles": [],
@@ -303,7 +303,7 @@
     }
   },
   "appDir": "/Users/anixd/Documents/clove-v2/dashboard",
-  "relativeAppDir": "",
+  "relativeAppDir": "dashboard",
   "files": [
     ".next/routes-manifest.json",
     ".next/server/pages-manifest.json",

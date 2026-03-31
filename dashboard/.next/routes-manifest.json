@@ -39,10 +39,34 @@
       "namedRegex": "^/_not\\-found(?:/)?$"
     },
     {
+      "page": "/activity",
+      "regex": "^/activity(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/activity(?:/)?$"
+    },
+    {
+      "page": "/agents",
+      "regex": "^/agents(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/agents(?:/)?$"
+    },
+    {
+      "page": "/agents/new",
+      "regex": "^/agents/new(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/agents/new(?:/)?$"
+    },
+    {
       "page": "/audit",
       "regex": "^/audit(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/audit(?:/)?$"
+    },
+    {
+      "page": "/connections",
+      "regex": "^/connections(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/connections(?:/)?$"
     },
     {
       "page": "/cost",
@@ -57,10 +81,40 @@
       "namedRegex": "^/fleet(?:/)?$"
     },
     {
+      "page": "/governance",
+      "regex": "^/governance(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/governance(?:/)?$"
+    },
+    {
+      "page": "/mcp",
+      "regex": "^/mcp(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/mcp(?:/)?$"
+    },
+    {
+      "page": "/memory",
+      "regex": "^/memory(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/memory(?:/)?$"
+    },
+    {
       "page": "/openclaw",
       "regex": "^/openclaw(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/openclaw(?:/)?$"
+    },
+    {
+      "page": "/pipelines",
+      "regex": "^/pipelines(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/pipelines(?:/)?$"
+    },
+    {
+      "page": "/providers",
+      "regex": "^/providers(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/providers(?:/)?$"
     },
     {
       "page": "/runs",
@@ -73,6 +127,18 @@
       "regex": "^/settings(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/settings(?:/)?$"
+    },
+    {
+      "page": "/swarm",
+      "regex": "^/swarm(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/swarm(?:/)?$"
+    },
+    {
+      "page": "/worlds",
+      "regex": "^/worlds(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/worlds(?:/)?$"
     }
   ],
   "dataRoutes": [],

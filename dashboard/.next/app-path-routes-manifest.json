@@ -1,10 +1,21 @@
 {
   "/_not-found/page": "/_not-found",
-  "/audit/page": "/audit",
-  "/fleet/page": "/fleet",
-  "/openclaw/page": "/openclaw",
-  "/page": "/",
+  "/agents/page": "/agents",
   "/cost/page": "/cost",
+  "/agents/new/page": "/agents/new",
+  "/governance/page": "/governance",
+  "/mcp/page": "/mcp",
+  "/activity/page": "/activity",
+  "/connections/page": "/connections",
+  "/memory/page": "/memory",
+  "/page": "/",
+  "/audit/page": "/audit",
+  "/openclaw/page": "/openclaw",
+  "/pipelines/page": "/pipelines",
   "/settings/page": "/settings",
-  "/runs/page": "/runs"
+  "/runs/page": "/runs",
+  "/swarm/page": "/swarm",
+  "/worlds/page": "/worlds",
+  "/fleet/page": "/fleet",
+  "/providers/page": "/providers"
 }
