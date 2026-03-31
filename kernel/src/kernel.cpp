@@ -436,8 +436,90 @@ bool Kernel::init() {
         }
     }
 
-    // Start MCP servers
+    // Load MCP servers from ~/.clove/mcp.yaml
     if (mcp_bridge_) {
+        std::string mcp_config_path = std::string(getenv("HOME") ? getenv("HOME") : "") + "/.clove/mcp.yaml";
+        std::ifstream mcp_file(mcp_config_path);
+        if (mcp_file.is_open()) {
+            spdlog::info("Loading MCP config from {}", mcp_config_path);
+            std::string line;
+            McpServerConfig current_server;
+            bool in_server = false;
+            bool in_args = false;
+            bool in_env = false;
+            while (std::getline(mcp_file, line)) {
+                // Trim
+                auto trimmed = line;
+                while (!trimmed.empty() && (trimmed[0] == ' ' || trimmed[0] == '\t')) trimmed.erase(0, 1);
+                if (trimmed.empty() || trimmed[0] == '#') continue;
+
+                if (trimmed.find("- name:") == 0) {
+                    // Save previous server if any
+                    if (in_server && !current_server.name.empty()) {
+                        mcp_bridge_->add_server(current_server);
+                        spdlog::info("  MCP server configured: {}", current_server.name);
+                    }
+                    current_server = McpServerConfig{};
+                    in_server = true;
+                    in_args = false;
+                    in_env = false;
+                    auto val = trimmed.substr(8);
+                    // Remove quotes
+                    if (val.size() >= 2 && val.front() == '"' && val.back() == '"') val = val.substr(1, val.size()-2);
+                    current_server.name = val;
+                } else if (in_server && trimmed.find("command:") == 0) {
+                    auto val = trimmed.substr(9);
+                    while (!val.empty() && val[0] == ' ') val.erase(0, 1);
+                    current_server.command = val;
+                } else if (in_server && trimmed.find("args:") == 0) {
+                    in_args = true;
+                    in_env = false;
+                    // Check for inline array: args: ["a", "b"]
+                    auto rest = trimmed.substr(5);
+                    while (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+                    if (!rest.empty() && rest[0] == '[') {
+                        // Parse inline array
+                        rest = rest.substr(1); // remove [
+                        if (rest.back() == ']') rest.pop_back();
+                        std::string token;
+                        for (char c : rest) {
+                            if (c == ',' || c == ']') {
+                                while (!token.empty() && token[0] == ' ') token.erase(0, 1);
+                                while (!token.empty() && token.back() == ' ') token.pop_back();
+                                if (token.size() >= 2 && token.front() == '"' && token.back() == '"')
+                                    token = token.substr(1, token.size()-2);
+                                if (!token.empty()) current_server.args.push_back(token);
+                                token.clear();
+                            } else {
+                                token += c;
+                            }
+                        }
+                        // Last token
+                        while (!token.empty() && token[0] == ' ') token.erase(0, 1);
+                        while (!token.empty() && token.back() == ' ') token.pop_back();
+                        if (token.size() >= 2 && token.front() == '"' && token.back() == '"')
+                            token = token.substr(1, token.size()-2);
+                        if (!token.empty()) current_server.args.push_back(token);
+                        in_args = false;
+                    }
+                } else if (in_args && trimmed.find("- ") == 0) {
+                    auto val = trimmed.substr(2);
+                    if (val.size() >= 2 && val.front() == '"' && val.back() == '"') val = val.substr(1, val.size()-2);
+                    current_server.args.push_back(val);
+                } else if (in_server && trimmed.find("env:") == 0) {
+                    in_env = true;
+                    in_args = false;
+                }
+                // env entries are stored but we set them via setenv before spawn
+            }
+            // Save last server
+            if (in_server && !current_server.name.empty()) {
+                mcp_bridge_->add_server(current_server);
+                spdlog::info("  MCP server configured: {}", current_server.name);
+            }
+        }
+
+        // Start all configured MCP servers
         mcp_bridge_->start_all();
         auto statuses = mcp_bridge_->status();
         for (const auto& s : statuses) {
