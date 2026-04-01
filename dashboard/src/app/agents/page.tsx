@@ -1,7 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useDemo } from '@/lib/demo-context'
+import { getAgentDefs } from '@/lib/api'
 
 interface Agent {
   name: string; description: string; enabled: boolean; state: 'running' | 'idle' | 'stopped'
@@ -44,9 +45,28 @@ const STATE_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
 
 export default function AgentsPage() {
   const { isDemo } = useDemo()
-  const [agents] = useState<Agent[]>(isDemo ? DEMO : [])
+  const [agents, setAgents] = useState<Agent[]>([])
   const [selected, setSelected] = useState<Agent | null>(null)
   const [view, setView] = useState<'list' | 'grid'>('list')
+
+  useEffect(() => {
+    if (isDemo) { setAgents(DEMO); return }
+    const load = () => {
+      getAgentDefs().then(r => {
+        const defs = (r.agents || []).map((a: any) => ({
+          ...a,
+          state: a.enabled ? 'running' as const : 'stopped' as const,
+          tools: a.action?.tools || [],
+          budget: { per_run: a.budget?.per_run || 0, daily_max: a.budget?.daily_max || 0, daily_spent: a.budget?.daily_spent || 0 },
+          runs_today: 0, success_rate: 100,
+          sandbox: a.permissions || { can_exec: false, can_http: false, can_write: false, allowed_domains: [], allowed_paths: [] },
+          mcp_servers: [],
+        }))
+        setAgents(defs)
+      }).catch(() => {})
+    }
+    load(); const i = setInterval(load, 5000); return () => clearInterval(i)
+  }, [isDemo])
 
   const running = agents.filter(a => a.state === 'running').length
   const totalSpend = agents.reduce((s, a) => s + a.budget.daily_spent, 0)

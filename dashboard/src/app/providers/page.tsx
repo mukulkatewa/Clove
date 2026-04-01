@@ -100,12 +100,31 @@ const QUALITY_COLORS: Record<string, string> = { high: 'var(--green)', medium: '
 
 export default function ProvidersPage() {
   const { isDemo } = useDemo()
-  const [providers] = useState<Provider[]>(PROVIDERS)
+  const [providers, setProviders] = useState<Provider[]>(PROVIDERS)
   const [inferenceConfig, setInferenceConfig] = useState<{ default_model?: string; allowed_models?: string[]; max_cost_usd?: number; current_cost_usd?: number } | null>(null)
 
   useEffect(() => {
     if (isDemo) return
     fetch(`${API}/api/inference`).then(r => r.json()).then(setInferenceConfig).catch(() => {})
+    // Fetch real provider status and merge with static catalog
+    fetch(`${API}/api/providers`).then(r => r.json()).then((data: { providers: Array<{ name: string; connected: boolean }> }) => {
+      const connectedNames = new Set((data.providers || []).filter(p => p.connected).map(p => p.name))
+      setProviders(prev => prev.map(p => ({
+        ...p,
+        status: connectedNames.has(p.id) || connectedNames.has(p.name.toLowerCase()) ? 'connected' as const : p.status,
+      })))
+    }).catch(() => {})
+    // Check runtime availability
+    fetch(`${API}/api/runtimes`).then(r => r.json()).then((data: { runtimes: Array<{ name: string; status: string }> }) => {
+      const runtimeStatus: Record<string, string> = {}
+      for (const rt of data.runtimes || []) runtimeStatus[rt.name] = rt.status
+      setProviders(prev => prev.map(p => {
+        if (p.id === 'anthropic' && runtimeStatus['claude-code'] === 'available') return { ...p, status: 'connected' as const }
+        if (p.id === 'openai' && runtimeStatus['codex'] === 'available') return { ...p, status: 'connected' as const }
+        if (p.id === 'openclaw' && runtimeStatus['openclaw'] === 'available') return { ...p, status: 'connected' as const }
+        return p
+      }))
+    }).catch(() => {})
   }, [isDemo])
   const [expanded, setExpanded] = useState<string | null>(null)
   const [view, setView] = useState<'providers' | 'models'>('providers')
