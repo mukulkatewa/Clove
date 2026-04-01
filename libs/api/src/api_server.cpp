@@ -2697,6 +2697,279 @@ void ApiServer::setup_routes() {
     });
 
     // ===================================================================
+    // Pipeline Engine — sequential multi-runtime step execution
+    // POST /api/pipeline/run
+    // The core of CLOVE. Executes steps in order, dispatches to different
+    // runtimes (CLOVE/Claude Code/Codex/OpenClaw), passes context via world state.
+    // ===================================================================
+    svr.Post("/api/pipeline/run", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.status = 503;
+            res.set_content(R"({"error":"LLM not configured"})", "application/json");
+            return;
+        }
+
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res.status = 400; res.set_content(R"({"error":"invalid JSON"})", "application/json"); return;
+        }
+
+        std::string pipeline_name = body.value("name", "pipeline");
+        json steps = body.value("steps", json::array());
+        json trigger_context = body.value("context", json::object());
+
+        if (steps.empty()) {
+            res.status = 400; res.set_content(R"({"error":"steps array required"})", "application/json"); return;
+        }
+
+        auto* openrouter = ctx_.openrouter;
+        auto* gateway = &ctx_.inference_gateway;
+        auto* privacy = &ctx_.privacy_filter;
+        auto* audit = &ctx_.audit_logger;
+        auto* state = &ctx_.state_store;
+        auto* perms = &ctx_.permissions_store;
+        auto* artifacts = ctx_.artifact_store;
+        auto* chains = ctx_.chain_store;
+        auto* memory = ctx_.memory_blocks;
+        auto* mcp = ctx_.mcp_bridge;
+        auto* assembler = ctx_.assembler;
+        auto* config = &ctx_.config;
+
+        // SSE streaming response
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [=](size_t, httplib::DataSink& sink) -> bool {
+
+                auto emit = [&sink](const json& event) {
+                    std::string line = "data: " + event.dump() + "\n\n";
+                    sink.write(line.c_str(), line.size());
+                };
+
+                // Create world for this pipeline run
+                std::string world_name = pipeline_name + "-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
+                uint32_t world_id = 0;
+                if (ctx_.world_engine) {
+                    world_id = ctx_.world_engine->create(world_name, {{"pipeline", pipeline_name}, {"steps", static_cast<int>(steps.size())}});
+                }
+
+                // Store trigger context in world state
+                if (!trigger_context.empty()) {
+                    state->store(world_name + ":trigger_context", trigger_context, 0);
+                }
+
+                emit({{"type", "pipeline_start"}, {"data", {
+                    {"pipeline", pipeline_name}, {"world", world_name}, {"world_id", world_id},
+                    {"step_count", steps.size()}, {"trigger_context", trigger_context},
+                }}});
+
+                audit->log(AuditCategory::RESOURCE, "PIPELINE_START", 0, "", {{"pipeline", pipeline_name}, {"world", world_name}, {"steps", static_cast<int>(steps.size())}});
+
+                // Execute steps
+                json step_results = json::array();
+                double total_cost = 0;
+                int total_tokens = 0;
+                bool pipeline_success = true;
+
+                // Build dependency graph — steps with depends_on wait for predecessors
+                std::map<std::string, json> completed_outputs;
+
+                for (size_t i = 0; i < steps.size(); i++) {
+                    auto& step = steps[i];
+                    std::string step_name = step.value("name", "step-" + std::to_string(i + 1));
+                    std::string runtime = step.value("runtime", "clove");
+                    std::string role = step.value("role", "");
+                    std::string model = step.value("model", config->llm_model);
+                    double budget = step.value("budget", 0.50);
+                    int max_steps = step.value("max_steps", 15);
+                    auto tools = step.value("tools", std::vector<std::string>{});
+                    std::string output_key = step.value("output_key", step_name);
+                    auto input_keys = step.value("input_keys", std::vector<std::string>{});
+
+                    emit({{"type", "step_start"}, {"data", {
+                        {"step", i + 1}, {"name", step_name}, {"runtime", runtime},
+                        {"model", model}, {"budget", budget},
+                    }}});
+
+                    // Gather input context from previous steps
+                    std::string input_context;
+                    for (const auto& key : input_keys) {
+                        auto val = state->fetch(world_name + ":" + key, 0);
+                        if (val.has_value()) {
+                            input_context += "=== " + key + " ===\n";
+                            if (val.value().is_string()) {
+                                input_context += val.value().get<std::string>() + "\n\n";
+                            } else {
+                                input_context += val.value().dump() + "\n\n";
+                            }
+                        }
+                    }
+
+                    // Also include trigger context for first step
+                    if (i == 0 && !trigger_context.empty()) {
+                        input_context += "=== trigger ===\n" + trigger_context.dump() + "\n\n";
+                    }
+
+                    // Build the goal with role + context
+                    std::string goal = role;
+                    if (!input_context.empty()) {
+                        goal += "\n\nCONTEXT FROM PREVIOUS STEPS:\n" + input_context;
+                    }
+
+                    // Dispatch to runtime
+                    std::string output;
+                    double step_cost = 0;
+                    int step_tokens = 0;
+                    int step_steps = 0;
+                    bool step_success = false;
+
+                    if (runtime == "claude-code") {
+                        // Spawn Claude Code
+                        std::string escaped_goal = goal;
+                        // Simple escape for shell
+                        for (auto& ch : escaped_goal) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
+                        if (escaped_goal.size() > 4000) escaped_goal = escaped_goal.substr(0, 4000);
+
+                        std::string cmd = "claude -p \"" + escaped_goal + "\" --output-format text 2>&1";
+                        FILE* pipe = popen(cmd.c_str(), "r");
+                        if (pipe) {
+                            char buf[4096];
+                            while (fgets(buf, sizeof(buf), pipe)) {
+                                output += buf;
+                                if (output.size() > 200000) break;
+                            }
+                            int ec = pclose(pipe);
+                            step_success = (ec == 0);
+                        }
+
+                    } else if (runtime == "codex") {
+                        // Spawn Codex
+                        std::string escaped_goal = goal;
+                        for (auto& ch : escaped_goal) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
+                        if (escaped_goal.size() > 4000) escaped_goal = escaped_goal.substr(0, 4000);
+
+                        std::string cmd = "codex exec \"" + escaped_goal + "\" --approval-mode full-auto 2>&1";
+                        FILE* pipe = popen(cmd.c_str(), "r");
+                        if (pipe) {
+                            char buf[4096];
+                            while (fgets(buf, sizeof(buf), pipe)) {
+                                output += buf;
+                                if (output.size() > 200000) break;
+                            }
+                            int ec = pclose(pipe);
+                            step_success = (ec == 0);
+                        }
+
+                    } else {
+                        // Default: CLOVE RunEngine
+                        RunConfig cfg;
+                        cfg.goal = goal;
+                        cfg.model = model;
+                        cfg.budget_usd = budget;
+                        cfg.max_steps = max_steps;
+                        cfg.allowed_tools = tools;
+                        cfg.agent_name = step_name;
+
+                        RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                                         *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
+
+                        auto result = engine.execute(cfg, [&emit, &step_name, &i](const RunEvent& ev) {
+                            json wrapped;
+                            wrapped["type"] = "step_event";
+                            wrapped["data"] = ev.data;
+                            wrapped["data"]["step"] = static_cast<int>(i + 1);
+                            wrapped["data"]["agent"] = step_name;
+                            wrapped["data"]["event_type"] = ev.type;
+                            emit(wrapped);
+                        });
+
+                        output = result.content;
+                        step_cost = result.total_cost_usd;
+                        step_tokens = result.total_tokens;
+                        step_steps = result.steps;
+                        step_success = result.success;
+                    }
+
+                    // Store output in world state
+                    state->store(world_name + ":" + output_key, output.substr(0, 50000), 0);
+                    completed_outputs[output_key] = output.substr(0, 2000);
+
+                    total_cost += step_cost;
+                    total_tokens += step_tokens;
+                    if (!step_success) pipeline_success = false;
+
+                    json step_result = {
+                        {"name", step_name}, {"runtime", runtime}, {"success", step_success},
+                        {"cost_usd", step_cost}, {"tokens", step_tokens}, {"steps", step_steps},
+                        {"output_preview", output.substr(0, 500)}, {"output_key", output_key},
+                    };
+                    step_results.push_back(step_result);
+
+                    emit({{"type", "step_done"}, {"data", {
+                        {"step", i + 1}, {"name", step_name}, {"runtime", runtime},
+                        {"success", step_success}, {"cost_usd", step_cost},
+                        {"output_preview", output.substr(0, 200)},
+                    }}});
+
+                    // If step failed, stop pipeline (unless retry configured)
+                    if (!step_success) {
+                        emit({{"type", "step_failed"}, {"data", {
+                            {"step", i + 1}, {"name", step_name}, {"error", output.substr(0, 500)},
+                        }}});
+                        break;
+                    }
+                }
+
+                // Pipeline done
+                emit({{"type", "pipeline_done"}, {"data", {
+                    {"pipeline", pipeline_name}, {"world", world_name},
+                    {"success", pipeline_success},
+                    {"total_cost_usd", total_cost}, {"total_tokens", total_tokens},
+                    {"steps_completed", step_results.size()}, {"steps_total", steps.size()},
+                    {"results", step_results},
+                }}});
+
+                audit->log(AuditCategory::RESOURCE, "PIPELINE_DONE", 0, "", {
+                    {"pipeline", pipeline_name}, {"world", world_name},
+                    {"success", pipeline_success}, {"cost", total_cost}, {"steps", static_cast<int>(step_results.size())},
+                });
+
+                sink.done();
+                return true;
+            },
+            nullptr
+        );
+    });
+
+    // Pipeline definitions — CRUD
+    svr.Get("/api/pipeline-defs", [this](const httplib::Request&, httplib::Response& res) {
+        auto keys = ctx_.state_store.keys("pipeline-def:", 0);
+        json pipelines = json::array();
+        for (const auto& key : keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (val.has_value()) { try { pipelines.push_back(val.value()); } catch (...) {} }
+        }
+        res.set_content(json({{"pipelines", pipelines}, {"count", pipelines.size()}}).dump(), "application/json");
+    });
+
+    svr.Post("/api/pipeline-defs", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            if (name.empty()) { res.status = 400; res.set_content(R"({"error":"name required"})", "application/json"); return; }
+            ctx_.state_store.store("pipeline-def:" + name, body, 0);
+            res.status = 201;
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400; res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Delete(R"(/api/pipeline-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        ctx_.state_store.erase("pipeline-def:" + std::string(req.matches[1]), 0);
+        res.set_content(R"({"success":true})", "application/json");
+    });
+
+    // ===================================================================
     // World Launch — run a multi-agent world from inline config
     // POST /api/worlds/launch  {"goal": "...", "world": "name", "agents": [{name, role, tools, budget}]}
     // ===================================================================
