@@ -2636,15 +2636,28 @@ void ApiServer::setup_routes() {
                 }
             }
 
-            // 3. If MCP bridge exists, add and start the server
+            // 3. If MCP bridge exists, add and hot-start the server
+            bool mcp_started = false;
             if (ctx_.mcp_bridge && !mcp_package.empty()) {
                 McpServerConfig sc;
                 sc.name = service;
                 sc.command = "npx";
                 sc.args = {mcp_package};
                 if (!extra_arg.empty()) sc.args.push_back(extra_arg);
+
+                // Set env var for the MCP server process
+                if (!token.empty() && !env_var.empty()) {
+                    setenv(env_var.c_str(), token.c_str(), 1);
+                }
+
                 ctx_.mcp_bridge->add_server(sc);
-                // Note: can't start individual server, but it's configured for next restart
+                mcp_started = ctx_.mcp_bridge->start_server(service);
+
+                if (mcp_started) {
+                    spdlog::info("MCP server '{}' hot-started", service);
+                } else {
+                    spdlog::warn("MCP server '{}' added but failed to start", service);
+                }
             }
 
             ctx_.audit_logger.log(AuditCategory::RESOURCE, "CONNECTION_SETUP", 0, "", {{"service", service}});
@@ -2654,8 +2667,18 @@ void ApiServer::setup_routes() {
             resp["connected"] = true;
             resp["service"] = service;
             resp["mcp_configured"] = !mcp_package.empty();
+            resp["mcp_active"] = mcp_started;
             resp["token_stored"] = !token.empty();
-            resp["note"] = "MCP server will be active after kernel restart. Run: clove stop && clove start";
+            if (mcp_started) {
+                // Discover tools from the newly started server
+                auto tools = ctx_.mcp_bridge->list_tools();
+                json tool_list = json::array();
+                for (const auto& t : tools) {
+                    if (t.server_name == service) tool_list.push_back(t.name);
+                }
+                resp["tools"] = tool_list;
+                resp["tool_count"] = tool_list.size();
+            }
             res.status = 201;
             res.set_content(resp.dump(), "application/json");
         } catch (const std::exception& e) {
@@ -2666,33 +2689,40 @@ void ApiServer::setup_routes() {
 
     // GET /api/connections — list all connected services with status
     svr.Get("/api/connections", [this](const httplib::Request&, httplib::Response& res) {
-        // Gather from providers + MCP servers
-        auto provider_keys = ctx_.state_store.keys("provider:", 0);
         json connections = json::array();
+        std::set<std::string> seen;
 
+        // From provider keys
+        auto provider_keys = ctx_.state_store.keys("provider:", 0);
         for (const auto& key : provider_keys) {
             auto val = ctx_.state_store.fetch(key, 0);
             if (!val.has_value()) continue;
             auto p = val.value();
             std::string name = key.substr(9);
+            seen.insert(name);
             bool has_key = !p.value("api_key", "").empty();
-
-            // Check if MCP server is running for this connection
-            bool mcp_active = false;
             int tool_count = 0;
+            bool mcp_active = false;
             if (ctx_.mcp_bridge) {
-                auto tools = ctx_.mcp_bridge->list_tools();
-                for (const auto& t : tools) {
+                for (const auto& t : ctx_.mcp_bridge->list_tools()) {
                     if (t.server_name == name) { mcp_active = true; tool_count++; }
                 }
             }
+            connections.push_back({{"name", name}, {"connected", has_key}, {"mcp_active", mcp_active}, {"tools", tool_count}});
+        }
 
-            connections.push_back({
-                {"name", name},
-                {"connected", has_key},
-                {"mcp_active", mcp_active},
-                {"tools", tool_count},
-            });
+        // From MCP servers (even those without stored tokens — e.g. filesystem)
+        if (ctx_.mcp_bridge) {
+            auto statuses = ctx_.mcp_bridge->status();
+            for (const auto& s : statuses) {
+                if (seen.count(s.name)) continue;
+                seen.insert(s.name);
+                int tool_count = 0;
+                for (const auto& t : ctx_.mcp_bridge->list_tools()) {
+                    if (t.server_name == s.name) tool_count++;
+                }
+                connections.push_back({{"name", s.name}, {"connected", s.connected}, {"mcp_active", s.connected}, {"tools", tool_count}});
+            }
         }
 
         res.set_content(json({{"connections", connections}, {"count", connections.size()}}).dump(), "application/json");
