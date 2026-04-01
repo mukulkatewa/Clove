@@ -1,54 +1,78 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { getMcpServers, getMcpTools } from '@/lib/api'
-import type { McpServer, McpTool } from '@/lib/api'
 import { useDemo } from '@/lib/demo-context'
-import { demoMcpServers, demoMcpTools } from '@/lib/demo-data'
+import { SERVICES, SERVICE_CATEGORIES, type ServiceDef } from '@/lib/services'
 
-interface Connection { name: string; type: string; status: string; tools: number; toolList: McpTool[]; description: string }
+const API = process.env.NEXT_PUBLIC_API_URL || ''
 
-const SERVICE_INFO: Record<string, string> = {
-  github: 'Repository access, PR management, issue tracking',
-  slack: 'Messaging, channel management, notifications',
-  filesystem: 'Local file read/write access',
-  postgres: 'Database queries, table management',
-  notion: 'Documentation, wikis, databases',
-}
+interface Connection { name: string; connected: boolean; mcp_active: boolean; tools: number }
 
 export default function ConnectionsPage() {
   const { isDemo } = useDemo()
   const [connections, setConnections] = useState<Connection[]>([])
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [category, setCategory] = useState('all')
+  const [connecting, setConnecting] = useState<ServiceDef | null>(null)
+  const [token, setToken] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [success, setSuccess] = useState('')
 
-  useEffect(() => {
+  const refresh = () => {
     if (isDemo) {
-      const servers = demoMcpServers() as McpServer[]
-      const tools = demoMcpTools() as McpTool[]
-      setConnections(servers.map(s => ({
-        name: s.name, type: 'mcp', status: s.status,
-        tools: s.tools_count,
-        toolList: tools.filter(t => t.server_name === s.name),
-        description: SERVICE_INFO[s.name] || s.command,
-      })))
+      setConnections([
+        { name: 'github', connected: true, mcp_active: true, tools: 12 },
+        { name: 'slack', connected: true, mcp_active: true, tools: 8 },
+        { name: 'filesystem', connected: true, mcp_active: true, tools: 5 },
+        { name: 'postgres', connected: false, mcp_active: false, tools: 0 },
+      ])
       return
     }
-    const load = async () => {
-      try {
-        const [servers, tools] = await Promise.all([getMcpServers(), getMcpTools()])
-        setConnections((servers.servers || []).map(s => ({
-          name: s.name, type: 'mcp', status: s.status,
-          tools: s.tools_count,
-          toolList: (tools.tools || []).filter(t => t.server_name === s.name),
-          description: SERVICE_INFO[s.name] || s.command,
-        })))
-      } catch {}
-    }
-    load()
-    const i = setInterval(load, 5000)
-    return () => clearInterval(i)
-  }, [isDemo])
+    fetch(`${API}/api/connections`).then(r => r.json()).then(d => setConnections(d.connections || [])).catch(() => {})
+  }
 
-  const active = connections.filter(c => c.status === 'running' || c.status === 'active')
+  useEffect(() => { refresh() }, [isDemo])
+
+  const isConnected = (serviceId: string) => connections.some(c => c.name === serviceId && c.connected)
+  const getConnection = (serviceId: string) => connections.find(c => c.name === serviceId)
+
+  const handleConnect = async (service: ServiceDef) => {
+    if (service.auth.type === 'none') {
+      // No auth needed — just configure MCP
+      setSaving(true)
+      await fetch(`${API}/api/connections/setup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: service.id, mcp_package: service.mcp_package, extra_arg: token || '/tmp' }),
+      }).catch(() => {})
+      setSaving(false); setConnecting(null); setToken(''); setSuccess(service.name + ' connected!'); refresh()
+      setTimeout(() => setSuccess(''), 3000)
+      return
+    }
+    setConnecting(service); setToken('')
+  }
+
+  const handleSaveConnection = async () => {
+    if (!connecting || !token.trim()) return
+    setSaving(true)
+    const res = await fetch(`${API}/api/connections/setup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service: connecting.id,
+        token: token.trim(),
+        mcp_package: connecting.mcp_package,
+        env_var: connecting.auth.env_var,
+      }),
+    }).then(r => r.json()).catch(() => ({ error: 'Failed to connect' }))
+
+    setSaving(false)
+    if (res.connected) {
+      setConnecting(null); setToken(''); setSuccess(connecting.name + ' connected!')
+      refresh()
+      setTimeout(() => setSuccess(''), 3000)
+    }
+  }
+
+  const filtered = category === 'all' ? SERVICES : SERVICES.filter(s => s.category === category)
+  const connectedCount = connections.filter(c => c.connected).length
+  const totalTools = connections.reduce((s, c) => s + c.tools, 0)
 
   return (
     <div>
@@ -56,79 +80,120 @@ export default function ConnectionsPage() {
         <div>
           <h2 className="text-[22px] font-semibold tracking-[-0.03em]">Connections</h2>
           <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-dim)' }}>
-            {active.length} active MCP connections · {connections.reduce((s, c) => s + c.tools, 0)} tools available
+            {connectedCount} connected · {totalTools} tools available · {SERVICES.length} services supported
           </p>
         </div>
       </div>
 
-      {connections.length === 0 ? (
-        <div className="card py-16 text-center">
-          <div className="text-[15px] font-semibold mb-1">No connections</div>
-          <p className="text-[13px] mb-4" style={{ color: 'var(--text-dim)' }}>Connect services via MCP. Configure in <span className="mono">~/.clove/mcp.yaml</span></p>
-          <div className="inline-block rounded-xl p-4 mono text-[11px] text-left" style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
-            clove connect github ghp_your_token
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {connections.map(conn => {
-            const isActive = conn.status === 'running' || conn.status === 'active'
-            const isOpen = expanded === conn.name
-            return (
-              <div key={conn.name} className="card overflow-hidden">
-                <button onClick={() => setExpanded(isOpen ? null : conn.name)} className="w-full text-left p-5 hover:bg-[var(--bg)] transition-colors">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-[14px] font-bold"
-                      style={{ background: isActive ? 'var(--green-light)' : 'var(--bg-raised)', color: isActive ? 'var(--green)' : 'var(--text-dim)' }}>
-                      {conn.name[0].toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[14px] font-semibold capitalize">{conn.name}</span>
-                        <span className="text-[9px] font-semibold uppercase px-1.5 py-[2px] rounded-full"
-                          style={{ background: isActive ? 'var(--green-light)' : 'var(--bg-raised)', color: isActive ? 'var(--green)' : 'var(--text-dim)' }}>
-                          {conn.status}
-                        </span>
-                        <span className="text-[9px] uppercase px-1.5 py-[2px] rounded-full" style={{ background: 'var(--bg-raised)', color: 'var(--text-dim)' }}>{conn.type}</span>
-                      </div>
-                      <div className="text-[12px] mt-0.5" style={{ color: 'var(--text-dim)' }}>{conn.description}</div>
-                    </div>
-                    <div className="text-[12px] tabular-nums" style={{ color: 'var(--text-dim)' }}>{conn.tools} tools</div>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-dim)', transform: isOpen ? 'rotate(180deg)' : '', transition: '150ms' }}><polyline points="6 9 12 15 18 9"/></svg>
-                  </div>
-                </button>
-
-                {isOpen && conn.toolList.length > 0 && (
-                  <div className="px-5 pb-5" style={{ borderTop: '1px solid var(--border)' }}>
-                    <div className="text-[10px] uppercase tracking-[0.06em] font-medium mt-3 mb-2" style={{ color: 'var(--text-dim)' }}>Available Tools</div>
-                    <div className="space-y-1.5">
-                      {conn.toolList.map((t, i) => (
-                        <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-lg" style={{ background: 'var(--bg)' }}>
-                          <span className="mono text-[12px] font-medium" style={{ color: 'var(--accent)' }}>{t.name}</span>
-                          <span className="text-[11px] flex-1" style={{ color: 'var(--text-dim)' }}>{t.description}</span>
-                          {(() => { const props = (t.input_schema as Record<string, unknown>)?.properties; return props ? <span className="text-[10px] mono" style={{ color: 'var(--text-dim)' }}>{Object.keys(props as Record<string, unknown>).join(', ')}</span> : null })()}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          })}
+      {/* Success message */}
+      {success && (
+        <div className="card p-3 mb-4 flex items-center gap-2" style={{ background: 'var(--green-light)' }}>
+          <span className="w-2 h-2 rounded-full" style={{ background: 'var(--green)' }} />
+          <span className="text-[13px] font-medium" style={{ color: 'var(--green)' }}>{success}</span>
         </div>
       )}
 
-      <div className="card p-5 mt-6">
-        <div className="text-[13px] font-semibold mb-2">Add Connections</div>
-        <div className="rounded-xl p-4 mono text-[11px] leading-relaxed" style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
-{`# Connect via CLI
-clove connect github ghp_your_token
-clove connect slack xoxb-your-token
-clove connect postgres postgresql://user:pass@host/db
+      {/* Connection modal */}
+      {connecting && (
+        <div className="card p-6 mb-6" style={{ borderLeft: '4px solid var(--accent)' }}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-[16px] font-semibold">Connect {connecting.name}</h3>
+            <button onClick={() => setConnecting(null)} className="text-[12px]" style={{ color: 'var(--text-dim)' }}>Cancel</button>
+          </div>
 
-# Or edit ~/.clove/mcp.yaml directly
-# Then restart kernel: clove stop && clove start`}
+          <p className="text-[13px] mb-4" style={{ color: 'var(--text-secondary)' }}>{connecting.auth.help_text}</p>
+
+          {connecting.auth.help_url && (
+            <a href={connecting.auth.help_url} target="_blank" rel="noopener noreferrer"
+              className="inline-block text-[12px] font-medium mb-4 underline" style={{ color: 'var(--accent)' }}>
+              Get your {connecting.auth.label} →
+            </a>
+          )}
+
+          <div className="mb-4">
+            <label className="block text-[11px] uppercase tracking-[0.06em] font-medium mb-1.5" style={{ color: 'var(--text-dim)' }}>
+              {connecting.auth.label}
+            </label>
+            <input
+              type={connecting.auth.type === 'token' ? 'password' : 'text'}
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              placeholder={connecting.auth.placeholder}
+              className="w-full rounded-lg px-4 py-3 text-[13px] mono outline-none placeholder:opacity-25"
+              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              onKeyDown={e => { if (e.key === 'Enter') handleSaveConnection() }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+              Tools: {connecting.tools_preview.slice(0, 4).join(', ')}{connecting.tools_preview.length > 4 ? ` +${connecting.tools_preview.length - 4}` : ''}
+            </div>
+            <button onClick={handleSaveConnection} disabled={saving || !token.trim()}
+              className="px-5 py-2.5 rounded-lg text-[13px] font-semibold text-white disabled:opacity-30"
+              style={{ background: 'var(--accent)' }}>
+              {saving ? 'Connecting...' : 'Connect'}
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* Category filter */}
+      <div className="flex gap-1 mb-5">
+        {SERVICE_CATEGORIES.map(cat => (
+          <button key={cat.id} onClick={() => setCategory(cat.id)}
+            className="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all"
+            style={{ background: category === cat.id ? 'var(--accent-light)' : 'transparent', color: category === cat.id ? 'var(--accent)' : 'var(--text-dim)' }}>
+            {cat.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Service grid */}
+      <div className="grid grid-cols-3 gap-3">
+        {filtered.map(service => {
+          const connected = isConnected(service.id)
+          const conn = getConnection(service.id)
+          return (
+            <div key={service.id} className="card p-4 hover:shadow-md transition-all relative">
+              {service.popular && <div className="absolute top-3 right-3 text-[8px] font-semibold uppercase px-1.5 py-[2px] rounded-full" style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}>Popular</div>}
+
+              <div className="flex items-center gap-2.5 mb-2">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-[14px] font-bold"
+                  style={{ background: connected ? 'var(--green-light)' : 'var(--bg-raised)', color: connected ? 'var(--green)' : 'var(--text-dim)' }}>
+                  {service.name[0]}
+                </div>
+                <div>
+                  <div className="text-[13px] font-semibold">{service.name}</div>
+                  {connected && <div className="text-[10px] font-medium" style={{ color: 'var(--green)' }}>Connected{conn?.tools ? ` · ${conn.tools} tools` : ''}</div>}
+                </div>
+              </div>
+
+              <p className="text-[11px] mb-3 line-clamp-2" style={{ color: 'var(--text-dim)' }}>{service.description}</p>
+
+              {/* Tools preview */}
+              <div className="flex flex-wrap gap-1 mb-3">
+                {service.tools_preview.slice(0, 3).map(t => (
+                  <span key={t} className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>{t}</span>
+                ))}
+                {service.tools_preview.length > 3 && <span className="text-[9px]" style={{ color: 'var(--text-dim)' }}>+{service.tools_preview.length - 3}</span>}
+              </div>
+
+              {connected ? (
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-[11px] font-medium" style={{ color: 'var(--green)' }}>✓ Connected</span>
+                  {service.webhook?.supported && <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--blue-light)', color: 'var(--blue)' }}>webhooks</span>}
+                </div>
+              ) : (
+                <button onClick={() => handleConnect(service)}
+                  className="w-full py-2 rounded-lg text-[12px] font-medium transition-all"
+                  style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
+                  Connect
+                </button>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

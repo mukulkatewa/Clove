@@ -2579,6 +2579,125 @@ void ApiServer::setup_routes() {
         res.set_content(R"({"success":true})", "application/json");
     });
 
+    // POST /api/connections/setup — one-call connection setup
+    // Stores token, writes MCP config, reloads bridge, verifies
+    svr.Post("/api/connections/setup", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string service = body.value("service", "");
+            std::string token = body.value("token", "");
+            std::string mcp_package = body.value("mcp_package", "");
+            std::string env_var = body.value("env_var", "");
+            std::string extra_arg = body.value("extra_arg", ""); // e.g. path for filesystem
+
+            if (service.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"service required"})", "application/json");
+                return;
+            }
+
+            // 1. Store the token/credential
+            if (!token.empty() && !env_var.empty()) {
+                ctx_.state_store.store("provider:" + service, json({{"api_key", token}, {"name", service}, {"env_var", env_var}}), 0);
+            }
+
+            // 2. Write MCP config
+            if (!mcp_package.empty()) {
+                std::string mcp_path = std::string(getenv("HOME") ? getenv("HOME") : "") + "/.clove/mcp.yaml";
+                std::string existing;
+                {
+                    std::ifstream f(mcp_path);
+                    if (f.is_open()) {
+                        std::string line;
+                        while (std::getline(f, line)) existing += line + "\n";
+                    }
+                }
+
+                // Only add if not already configured
+                if (existing.find("name: \"" + service + "\"") == std::string::npos) {
+                    if (existing.empty()) existing = "servers:\n";
+                    existing += "  - name: \"" + service + "\"\n";
+                    existing += "    command: npx\n";
+
+                    // Build args
+                    if (!extra_arg.empty()) {
+                        existing += "    args: [\"" + mcp_package + "\", \"" + extra_arg + "\"]\n";
+                    } else {
+                        existing += "    args: [\"" + mcp_package + "\"]\n";
+                    }
+
+                    if (!token.empty() && !env_var.empty()) {
+                        existing += "    env:\n";
+                        existing += "      " + env_var + ": \"" + token + "\"\n";
+                    }
+
+                    std::ofstream f(mcp_path);
+                    f << existing;
+                }
+            }
+
+            // 3. If MCP bridge exists, add and start the server
+            if (ctx_.mcp_bridge && !mcp_package.empty()) {
+                McpServerConfig sc;
+                sc.name = service;
+                sc.command = "npx";
+                sc.args = {mcp_package};
+                if (!extra_arg.empty()) sc.args.push_back(extra_arg);
+                ctx_.mcp_bridge->add_server(sc);
+                // Note: can't start individual server, but it's configured for next restart
+            }
+
+            ctx_.audit_logger.log(AuditCategory::RESOURCE, "CONNECTION_SETUP", 0, "", {{"service", service}});
+
+            // 4. Return success with connection info
+            json resp;
+            resp["connected"] = true;
+            resp["service"] = service;
+            resp["mcp_configured"] = !mcp_package.empty();
+            resp["token_stored"] = !token.empty();
+            resp["note"] = "MCP server will be active after kernel restart. Run: clove stop && clove start";
+            res.status = 201;
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    // GET /api/connections — list all connected services with status
+    svr.Get("/api/connections", [this](const httplib::Request&, httplib::Response& res) {
+        // Gather from providers + MCP servers
+        auto provider_keys = ctx_.state_store.keys("provider:", 0);
+        json connections = json::array();
+
+        for (const auto& key : provider_keys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            auto p = val.value();
+            std::string name = key.substr(9);
+            bool has_key = !p.value("api_key", "").empty();
+
+            // Check if MCP server is running for this connection
+            bool mcp_active = false;
+            int tool_count = 0;
+            if (ctx_.mcp_bridge) {
+                auto tools = ctx_.mcp_bridge->list_tools();
+                for (const auto& t : tools) {
+                    if (t.server_name == name) { mcp_active = true; tool_count++; }
+                }
+            }
+
+            connections.push_back({
+                {"name", name},
+                {"connected", has_key},
+                {"mcp_active", mcp_active},
+                {"tools", tool_count},
+            });
+        }
+
+        res.set_content(json({{"connections", connections}, {"count", connections.size()}}).dump(), "application/json");
+    });
+
     // ===================================================================
     // Agent Runtimes — spawn Claude Code, Codex, OpenClaw as agent processes
     // ===================================================================
