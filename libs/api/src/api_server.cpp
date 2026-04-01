@@ -3181,12 +3181,105 @@ void ApiServer::setup_routes() {
             }
         }
 
+        // Also check pipeline definitions for webhook triggers
+        auto pkeys = ctx_.state_store.keys("pipeline-def:", 0);
+        json pipelines_triggered = json::array();
+
+        for (const auto& key : pkeys) {
+            auto val = ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            auto pdef = val.value();
+            if (!pdef.value("enabled", false)) continue;
+            auto ptrigger = pdef.value("trigger", json::object());
+            if (ptrigger.value("type", "") != "webhook") continue;
+            std::string pt_source = ptrigger.value("source", "");
+            if (!pt_source.empty() && pt_source != source) continue;
+
+            // Match — trigger the pipeline asynchronously
+            std::string pname = pdef.value("name", "");
+            json steps = pdef.value("steps", json::array());
+
+            // We can't easily run the SSE pipeline in a detached thread,
+            // so we run each step inline in a thread
+            auto* openrouter_p = ctx_.openrouter;
+            auto* gateway_p = &ctx_.inference_gateway;
+            auto* privacy_p = &ctx_.privacy_filter;
+            auto* audit_p = &ctx_.audit_logger;
+            auto* state_p = &ctx_.state_store;
+            auto* perms_p = &ctx_.permissions_store;
+            auto* artifacts_p = ctx_.artifact_store;
+            auto* chains_p = ctx_.chain_store;
+            auto* memory_p = ctx_.memory_blocks;
+            auto* mcp_p = ctx_.mcp_bridge;
+            auto* assembler_p = ctx_.assembler;
+            auto* config_p = &ctx_.config;
+            auto* world_p = ctx_.world_engine;
+
+            std::thread([=]() {
+                std::string wn = pname + "-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
+                uint32_t wid = 0;
+                if (world_p) wid = world_p->create(wn, {{"pipeline", pname}});
+
+                state_p->store(wn + ":trigger_context", body, 0);
+                audit_p->log(AuditCategory::RESOURCE, "PIPELINE_TRIGGERED", 0, "", {{"pipeline", pname}, {"source", source}});
+
+                for (size_t si = 0; si < steps.size(); si++) {
+                    auto& step = steps[si];
+                    std::string sname = step.value("name", "step");
+                    std::string runtime = step.value("runtime", "clove");
+                    std::string role = step.value("role", "");
+                    std::string model = step.value("model", config_p->llm_model);
+                    double budget = step.value("budget", 0.5);
+                    int msteps = step.value("max_steps", 10);
+                    auto tools = step.value("tools", std::vector<std::string>{});
+                    std::string okey = step.value("output_key", sname);
+                    auto ikeys = step.value("input_keys", std::vector<std::string>{});
+
+                    std::string ctx_str;
+                    for (const auto& ik : ikeys) {
+                        auto v = state_p->fetch(wn + ":" + ik, 0);
+                        if (v.has_value()) ctx_str += "=== " + ik + " ===\n" + (v.value().is_string() ? v.value().get<std::string>() : v.value().dump()) + "\n\n";
+                    }
+                    if (si == 0) ctx_str += "=== trigger ===\n" + body.dump() + "\n\n";
+
+                    std::string goal = role;
+                    if (!ctx_str.empty()) goal += "\n\nCONTEXT:\n" + ctx_str;
+
+                    std::string output;
+                    if (runtime == "clove") {
+                        RunConfig cfg;
+                        cfg.goal = goal; cfg.model = model; cfg.budget_usd = budget; cfg.max_steps = msteps;
+                        cfg.allowed_tools = tools; cfg.agent_name = sname;
+                        RunEngine engine(*openrouter_p, *gateway_p, *privacy_p, *audit_p, *state_p, *perms_p, artifacts_p, chains_p, memory_p, mcp_p, assembler_p, *config_p);
+                        auto r = engine.execute(cfg);
+                        output = r.content;
+                        if (!r.success) break;
+                    } else {
+                        // Claude Code or Codex subprocess
+                        std::string eg = goal;
+                        for (auto& ch : eg) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
+                        if (eg.size() > 4000) eg = eg.substr(0, 4000);
+                        std::string cmd = runtime == "claude-code"
+                            ? "claude -p \"" + eg + "\" --output-format text 2>&1"
+                            : "codex exec \"" + eg + "\" --approval-mode full-auto 2>&1";
+                        FILE* pipe = popen(cmd.c_str(), "r");
+                        if (pipe) { char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) output += buf; pclose(pipe); }
+                    }
+                    state_p->store(wn + ":" + okey, output.substr(0, 50000), 0);
+                }
+            }).detach();
+
+            pipelines_triggered.push_back({{"pipeline", pname}, {"source", source}});
+        }
+
         json resp;
         resp["received"] = true;
         resp["source"] = source;
         resp["event_type"] = event_type;
         resp["agents_triggered"] = triggered.size();
+        resp["pipelines_triggered"] = pipelines_triggered.size();
         resp["triggered"] = triggered;
+        resp["pipelines"] = pipelines_triggered;
         res.set_content(resp.dump(), "application/json");
     });
 

@@ -844,6 +844,120 @@ async function cmdMcp(args: string[]): Promise<void> {
   }
 }
 
+// ── Pipeline ──────────────────────────────────────────────────────────
+
+async function cmdPipeline(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  const sub = args[0] || 'list'
+
+  if (sub === 'list' || sub === 'ls') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const r = await api<{ pipelines: any[]; count: number }>(cfg.apiPort, '/api/pipeline-defs')
+    if (!r?.pipelines?.length) { console.log(''); console.log(c.dim('  No pipelines. Create: clove pipeline create <name>')); console.log(''); return }
+    console.log(''); console.log(c.bold('  Pipelines'))
+    console.log(c.dim('  ─────────────────────────────────────────────'))
+    for (const p of r.pipelines) {
+      const steps = (p.steps || []).length
+      console.log(`  ${c.cyan(String(p.name).padEnd(20))} ${steps} steps ${c.dim(p.trigger?.type || 'manual')}`)
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'run') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline run <name>'); return }
+
+    // Load pipeline definition
+    const pdef = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (!pdef || pdef.error) {
+      console.log(c.red(`Pipeline not found: ${name}`)); return
+    }
+
+    console.log(c.cyan(`  Running pipeline: ${name}`))
+    console.log(c.dim(`  ${(pdef.steps || []).length} steps`))
+    console.log('')
+
+    const res = await fetch(`http://localhost:${cfg.apiPort}/api/pipeline/run`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: pdef.name, steps: pdef.steps, context: pdef.context || {} }),
+    })
+
+    const reader = res.body?.getReader()
+    if (!reader) { console.log(c.red('No stream')); return }
+    const decoder = new TextDecoder(); let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n'); buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const ev = JSON.parse(line.slice(6))
+          const t = ev.type; const d = ev.data || {}
+          if (t === 'pipeline_start') console.log(c.cyan(`  Pipeline: ${d.step_count} steps in world "${d.world}"`))
+          else if (t === 'step_start') console.log(`  ${c.dim(`Step ${d.step}:`)} ${c.bold(d.name)} (${d.runtime})...`)
+          else if (t === 'step_done') console.log(`  ${d.success ? c.green('OK') : c.red('FAIL')} ${d.name} — ${c.dim('$' + (d.cost_usd || 0).toFixed(4))}`)
+          else if (t === 'pipeline_done') {
+            console.log('')
+            console.log(`  ${d.success ? c.bold(c.green('Pipeline complete')) : c.bold(c.red('Pipeline failed'))}`)
+            console.log(c.dim(`  ${d.steps_completed}/${d.steps_total} steps · $${(d.total_cost_usd || 0).toFixed(4)}`))
+          }
+        } catch {}
+      }
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'create') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline create <name>'); return }
+    const pipeline = {
+      name,
+      enabled: false,
+      trigger: { type: 'manual' },
+      steps: [
+        { name: 'step-1', runtime: 'clove', role: 'Describe what this step does', tools: ['search', 'http'], budget: 0.30, max_steps: 10, output_key: 'step_1_output' }
+      ]
+    }
+    await api(cfg.apiPort, '/api/pipeline-defs', 'POST', pipeline)
+    console.log(c.green(`  Created pipeline: ${name}`))
+    console.log(c.dim(`  Edit steps, then: clove pipeline run ${name}`))
+    return
+  }
+
+  if (sub === 'show') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline show <name>'); return }
+    const p = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (!p || p.error) { console.log(c.red(`Not found: ${name}`)); return }
+    console.log(''); console.log(c.bold(`  ${p.name}`))
+    console.log(c.dim('  ─────────────────────────────────────'))
+    console.log(`  Trigger: ${p.trigger?.type || 'manual'}`)
+    console.log(`  Steps:`)
+    for (const s of (p.steps || [])) {
+      console.log(`    ${c.cyan(s.name)} (${s.runtime}) — ${s.role?.slice(0, 50) || ''}`)
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'delete' || sub === 'rm') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline delete <name>'); return }
+    await api(cfg.apiPort, `/api/pipeline-defs/${name}`, 'DELETE')
+    console.log(c.green(`  Deleted: ${name}`)); return
+  }
+
+  if (sub === 'enable') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) return
+    const p = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (p) { p.enabled = true; await api(cfg.apiPort, '/api/pipeline-defs', 'POST', p) }
+    console.log(c.green(`  Enabled: ${name}`)); return
+  }
+
+  console.log('Usage: clove pipeline [list|create|show|run|enable|delete] <name>')
+}
+
 // ── Analyze ───────────────────────────────────────────────────────────
 
 async function cmdAnalyze(path: string): Promise<void> {
@@ -1030,6 +1144,10 @@ switch (cmd) {
     break
   case 'policy':
     cmdPolicy()
+    break
+  case 'pipeline':
+  case 'pipe':
+    cmdPipeline(args.slice(1))
     break
   case 'analyze':
   case 'scan':
