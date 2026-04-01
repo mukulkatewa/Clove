@@ -201,6 +201,48 @@ export const deleteWorld = (id: number) => fetchAPI<{ success: boolean }>(`/api/
 // Memory search
 export const searchMemory = (query: string) => fetchAPI<{ blocks: MemoryBlock[] }>(`/api/memory/search?q=${encodeURIComponent(query)}`)
 
+// Pipelines
+export interface PipelineStep {
+  name: string; runtime: 'clove' | 'claude-code' | 'codex' | 'openclaw'; role: string
+  model?: string; tools?: string[]; budget: number; max_steps?: number
+  output_key: string; input_keys?: string[]
+}
+export interface PipelineDef {
+  name: string; enabled?: boolean
+  trigger?: { type: string; source?: string; schedule?: string }
+  steps: PipelineStep[]; context?: Record<string, unknown>
+}
+export const getPipelineDefs = () => fetchAPI<{ pipelines: PipelineDef[]; count: number }>('/api/pipeline-defs')
+export const createPipelineDef = (p: PipelineDef) => fetchAPI<PipelineDef>('/api/pipeline-defs', { method: 'POST', body: JSON.stringify(p) })
+export const deletePipelineDef = (name: string) => fetchAPI<{ success: boolean }>(`/api/pipeline-defs/${name}`, { method: 'DELETE' })
+
+export function streamPipeline(pipeline: { name: string; steps: PipelineStep[]; context?: Record<string, unknown> }, onEvent: (event: Record<string, unknown>) => void) {
+  fetch(`${API}/api/pipeline/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pipeline),
+  }).then(async (res) => {
+    const reader = res.body?.getReader(); if (!reader) return
+    const decoder = new TextDecoder(); let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n'); buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try { onEvent(JSON.parse(line.slice(6))) } catch {}
+      }
+    }
+  })
+}
+
+// Runtimes
+export const getRuntimes = () => fetchAPI<{ runtimes: Array<{ name: string; type: string; status: string; description: string; install?: string }> }>('/api/runtimes')
+
+// Providers
+export const getProviders = () => fetchAPI<{ providers: Array<{ name: string; connected: boolean; key_masked: string; base_url: string }>; count: number }>('/api/providers')
+export const addProvider = (name: string, api_key: string) => fetchAPI<{ name: string; connected: boolean }>('/api/providers', { method: 'POST', body: JSON.stringify({ name, api_key }) })
+export const removeProvider = (name: string) => fetchAPI<{ success: boolean }>(`/api/providers/${name}`, { method: 'DELETE' })
+
 // SSE helpers
 export function streamFleet(req: FleetRequest, onEvent: (event: Record<string, unknown>) => void) {
   fetch(`${API}/api/fleet`, {
