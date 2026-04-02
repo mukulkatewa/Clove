@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
 
-:root {
+:root, [data-theme="light"] {
   --bg: #f8f8fa;
   --bg-card: #ffffff;
   --bg-raised: #f1f1f4;
@@ -23,6 +23,30 @@
   --blue-light: #e6f0ff;
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+[data-theme="dark"] {
+  --bg: #0c0c0e;
+  --bg-card: #141416;
+  --bg-raised: #1c1c20;
+  --bg-hover: #222228;
+  --border: #2a2a30;
+  --border-subtle: #1e1e24;
+  --text: #f0f0f2;
+  --text-secondary: #a0a0ae;
+  --text-dim: #5c5c6a;
+  --accent: #e8924a;
+  --accent-light: rgba(232,146,74,0.12);
+  --green: #34d399;
+  --green-light: rgba(52,211,153,0.12);
+  --red: #f87171;
+  --red-light: rgba(248,113,113,0.12);
+  --yellow: #fbbf24;
+  --yellow-light: rgba(251,191,36,0.12);
+  --blue: #60a5fa;
+  --blue-light: rgba(96,165,250,0.12);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
 }
 
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
