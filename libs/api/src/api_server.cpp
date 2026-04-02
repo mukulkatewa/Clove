@@ -2812,16 +2812,25 @@ void ApiServer::setup_routes() {
             res.status = 400; res.set_content(R"({"error":"goal required"})", "application/json"); return;
         }
 
-        // Build command
+        // Build command with API key from provider store
         std::string tools_arg;
         for (const auto& t : allowed_tools) { if (!tools_arg.empty()) tools_arg += ","; tools_arg += t; }
 
-        std::string cmd = "claude -p \"" + goal + "\" --output-format json";
+        // Read Anthropic key from state store
+        std::string key_prefix;
+        auto anthropic_key = ctx_.state_store.fetch("provider:anthropic", 0);
+        if (anthropic_key && anthropic_key->is_object() && anthropic_key->contains("api_key")) {
+            key_prefix = "ANTHROPIC_API_KEY=" + anthropic_key->at("api_key").get<std::string>() + " ";
+        } else if (const char* env_key = getenv("ANTHROPIC_API_KEY")) {
+            key_prefix = std::string("ANTHROPIC_API_KEY=") + env_key + " ";
+        }
+
+        std::string cmd = key_prefix + "claude --bare -p \"" + goal + "\" --output-format json";
         if (!tools_arg.empty()) cmd += " --allowedTools \"" + tools_arg + "\"";
 
-        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "claude-code"}, {"goal", goal.substr(0, 100)}});
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "claude-code"}, {"goal", goal.substr(0, 100)}, {"has_key", !key_prefix.empty()}});
 
-        // Execute via popen with timeout
+        // Execute via popen
         std::string output;
         FILE* pipe = popen(cmd.c_str(), "r");
         if (!pipe) {
@@ -2858,10 +2867,19 @@ void ApiServer::setup_routes() {
             res.status = 400; res.set_content(R"({"error":"goal required"})", "application/json"); return;
         }
 
-        std::string cmd = "codex exec \"" + goal + "\" --json --approval-mode full-auto";
+        // Read OpenAI key from state store
+        std::string key_prefix;
+        auto openai_key = ctx_.state_store.fetch("provider:openai", 0);
+        if (openai_key && openai_key->is_object() && openai_key->contains("api_key")) {
+            key_prefix = "OPENAI_API_KEY=" + openai_key->at("api_key").get<std::string>() + " ";
+        } else if (const char* env_key = getenv("OPENAI_API_KEY")) {
+            key_prefix = std::string("OPENAI_API_KEY=") + env_key + " ";
+        }
+
+        std::string cmd = key_prefix + "codex exec \"" + goal + "\" --json --sandbox workspace-write";
         if (!model.empty()) cmd += " --model " + model;
 
-        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "codex"}, {"goal", goal.substr(0, 100)}});
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "codex"}, {"goal", goal.substr(0, 100)}, {"has_key", !key_prefix.empty()}});
 
         std::string output;
         FILE* pipe = popen(cmd.c_str(), "r");
@@ -3041,7 +3059,13 @@ void ApiServer::setup_routes() {
                         for (auto& ch : escaped_goal) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
                         if (escaped_goal.size() > 4000) escaped_goal = escaped_goal.substr(0, 4000);
 
-                        std::string cmd = "claude -p \"" + escaped_goal + "\" --output-format text 2>&1";
+                        // Get Anthropic key
+                        std::string kp;
+                        auto ak = ctx_.state_store.fetch("provider:anthropic", 0);
+                        if (ak && ak->is_object() && ak->contains("api_key")) kp = "ANTHROPIC_API_KEY=" + ak->at("api_key").get<std::string>() + " ";
+                        else if (const char* ek = getenv("ANTHROPIC_API_KEY")) kp = std::string("ANTHROPIC_API_KEY=") + ek + " ";
+
+                        std::string cmd = kp + "claude --bare -p \"" + escaped_goal + "\" --output-format text 2>&1";
                         FILE* pipe = popen(cmd.c_str(), "r");
                         if (pipe) {
                             char buf[4096];
@@ -3059,7 +3083,13 @@ void ApiServer::setup_routes() {
                         for (auto& ch : escaped_goal) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
                         if (escaped_goal.size() > 4000) escaped_goal = escaped_goal.substr(0, 4000);
 
-                        std::string cmd = "codex exec \"" + escaped_goal + "\" --approval-mode full-auto 2>&1";
+                        // Get OpenAI key
+                        std::string okp;
+                        auto ok2 = ctx_.state_store.fetch("provider:openai", 0);
+                        if (ok2 && ok2->is_object() && ok2->contains("api_key")) okp = "OPENAI_API_KEY=" + ok2->at("api_key").get<std::string>() + " ";
+                        else if (const char* ek2 = getenv("OPENAI_API_KEY")) okp = std::string("OPENAI_API_KEY=") + ek2 + " ";
+
+                        std::string cmd = okp + "codex exec \"" + escaped_goal + "\" --sandbox workspace-write 2>&1";
                         FILE* pipe = popen(cmd.c_str(), "r");
                         if (pipe) {
                             char buf[4096];
@@ -3467,13 +3497,25 @@ void ApiServer::setup_routes() {
                         output = r.content;
                         if (!r.success) break;
                     } else {
-                        // Claude Code or Codex subprocess
+                        // Claude Code or Codex subprocess — with API key passthrough
                         std::string eg = goal;
                         for (auto& ch : eg) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
                         if (eg.size() > 4000) eg = eg.substr(0, 4000);
+
+                        std::string kpfx;
+                        if (runtime == "claude-code") {
+                            auto ak = state_p->fetch("provider:anthropic", 0);
+                            if (ak && ak->is_object() && ak->contains("api_key")) kpfx = "ANTHROPIC_API_KEY=" + ak->at("api_key").get<std::string>() + " ";
+                            else if (const char* ek = getenv("ANTHROPIC_API_KEY")) kpfx = std::string("ANTHROPIC_API_KEY=") + ek + " ";
+                        } else {
+                            auto ok = state_p->fetch("provider:openai", 0);
+                            if (ok && ok->is_object() && ok->contains("api_key")) kpfx = "OPENAI_API_KEY=" + ok->at("api_key").get<std::string>() + " ";
+                            else if (const char* ek = getenv("OPENAI_API_KEY")) kpfx = std::string("OPENAI_API_KEY=") + ek + " ";
+                        }
+
                         std::string cmd = runtime == "claude-code"
-                            ? "claude -p \"" + eg + "\" --output-format text 2>&1"
-                            : "codex exec \"" + eg + "\" --approval-mode full-auto 2>&1";
+                            ? kpfx + "claude --bare -p \"" + eg + "\" --output-format text 2>&1"
+                            : kpfx + "codex exec \"" + eg + "\" --sandbox workspace-write 2>&1";
                         FILE* pipe = popen(cmd.c_str(), "r");
                         if (pipe) { char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) output += buf; pclose(pipe); }
                     }

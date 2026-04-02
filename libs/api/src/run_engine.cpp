@@ -1103,4 +1103,24 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     return result;
 }
 
+// ── Standalone wrapper for kernel.cpp (avoids EventCallback conflict with reactor.hpp) ──
+RunResult run_engine_execute_standalone(
+    OpenRouterClient& openrouter, InferenceGateway& inference, PrivacyFilter& privacy,
+    AuditLogger& audit, StateStore& state, PermissionsStore& perms,
+    ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+    McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
+    const std::string& goal, const std::string& model, double budget,
+    const std::string& agent_name, const std::vector<std::string>& tools)
+{
+    RunEngine engine(openrouter, inference, privacy, audit, state, perms,
+        artifacts, chains, memory, mcp, assembler, config);
+    RunConfig cfg;
+    cfg.goal = goal;
+    cfg.model = model;
+    cfg.budget_usd = budget;
+    cfg.agent_name = agent_name;
+    cfg.allowed_tools = tools;
+    return engine.execute(cfg);
+}
+
 } // namespace clove

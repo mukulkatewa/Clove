@@ -39,6 +39,28 @@
 #include <clove/openclaw_manager.hpp>
 #include <clove/daemon_manager.hpp>
 
+// Forward-declare standalone runner to avoid EventCallback naming conflict with reactor.hpp
+// (run_engine.hpp defines EventCallback = function<void(RunEvent)>, reactor.hpp defines it as function<void(int,uint32_t)>)
+namespace clove {
+    struct RunResult {
+        bool success = false;
+        std::string content;
+        std::string error;
+        std::string chain_id;
+        int steps = 0;
+        int total_tokens = 0;
+        double total_cost_usd = 0.0;
+        std::vector<nlohmann::json> step_log;
+    };
+    RunResult run_engine_execute_standalone(
+        OpenRouterClient& openrouter, InferenceGateway& inference, PrivacyFilter& privacy,
+        AuditLogger& audit, StateStore& state, PermissionsStore& perms,
+        ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+        McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
+        const std::string& goal, const std::string& model, double budget,
+        const std::string& agent_name, const std::vector<std::string>& tools);
+}
+
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 #include <sys/wait.h>
@@ -417,9 +439,45 @@ bool Kernel::init() {
     openclaw_manager_ = std::make_unique<OpenClawManager>(
         *sandbox_manager_, *audit_logger_, config_);
 
-    // Create daemon manager
+    // Create daemon manager + wire it to RunEngine
     daemon_manager_ = std::make_unique<DaemonManager>(
         *state_store_, *audit_logger_, memory_block_store_.get());
+
+    if (openrouter_ && openrouter_->is_configured()) {
+        daemon_manager_->set_run_fn([this](const std::string& agent_name, const std::string& goal, double budget) -> nlohmann::json {
+            std::string model;
+            std::vector<std::string> tools;
+
+            // Load agent-def for tools/model if exists
+            auto def = state_store_->fetch("agent-def:" + agent_name, 0);
+            if (def) {
+                if (def->contains("action")) {
+                    auto& action = (*def)["action"];
+                    if (action.contains("model") && !action["model"].empty())
+                        model = action["model"].get<std::string>();
+                    if (action.contains("tools") && action["tools"].is_array()) {
+                        for (auto& t : action["tools"]) tools.push_back(t.get<std::string>());
+                    }
+                }
+            }
+
+            auto result = run_engine_execute_standalone(
+                *openrouter_, *inference_gateway_, *privacy_filter_,
+                *audit_logger_, *state_store_, *permissions_store_,
+                artifact_store_.get(), chain_store_.get(),
+                memory_block_store_.get(), mcp_bridge_.get(), context_assembler_.get(), config_,
+                goal, model, budget, agent_name, tools);
+
+            return nlohmann::json({
+                {"success", result.success},
+                {"content", result.content},
+                {"total_cost_usd", result.total_cost_usd},
+                {"total_tokens", result.total_tokens},
+                {"steps", result.steps},
+            });
+        });
+        spdlog::info("Daemon manager: run function wired to RunEngine");
+    }
 
     // Start API server
     if (config_.api_enabled) {
