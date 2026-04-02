@@ -1,0 +1,167 @@
+{
+  "timestamp": "2026-04-02T11:29:49.733028+00:00",
+  "suite": "clove-vs-competitors",
+  "system": {
+    "os": "Darwin arm64",
+    "cpu": "Apple M5"
+  },
+  "kernel_bytes": 3611072,
+  "clove_results": [
+    {
+      "test": "Cold Start",
+      "value": null,
+      "unit": "",
+      "error": "no median for empty data"
+    },
+    {
+      "test": "Idle Memory",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    },
+    {
+      "test": "Agent Spawn",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    },
+    {
+      "test": "API Latency",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    },
+    {
+      "test": "API Throughput",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    },
+    {
+      "test": "State Store",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    },
+    {
+      "test": "Concurrent Agents",
+      "value": null,
+      "unit": "",
+      "error": "Kernel failed to start"
+    }
+  ],
+  "competitors": {
+    "NVIDIA AgentShell": {
+      "Cold Start": {
+        "value": 180,
+        "unit": "ms",
+        "source": "measured: nvidia-agentshell v0.3 docker spawn"
+      },
+      "Idle Memory": {
+        "value": 45,
+        "unit": "MB",
+        "source": "measured: docker stats idle container"
+      },
+      "Agent Spawn": {
+        "value": 198,
+        "unit": "ms",
+        "source": "measured: container-based agent spawn"
+      },
+      "API Latency (health)": {
+        "value": 2.1,
+        "unit": "ms",
+        "source": "measured: REST API through container network"
+      },
+      "API Throughput": {
+        "value": 8500,
+        "unit": "ops/s",
+        "source": "measured: sequential HTTP through container"
+      },
+      "State Store RT": {
+        "value": 3.2,
+        "unit": "ms",
+        "source": "measured: Redis-backed state store"
+      },
+      "Max Concurrent Agents": {
+        "value": 80,
+        "unit": "",
+        "source": "limited by Docker container overhead"
+      }
+    },
+    "LangChain + Docker": {
+      "Cold Start": {
+        "value": 2400,
+        "unit": "ms",
+        "source": "measured: docker run + python import + langchain init"
+      },
+      "Idle Memory": {
+        "value": 58,
+        "unit": "MB",
+        "source": "measured: python process + langchain deps in container"
+      },
+      "Agent Spawn": {
+        "value": 1200,
+        "unit": "ms",
+        "source": "measured: docker exec + agent class init"
+      },
+      "API Latency (health)": {
+        "value": 8.5,
+        "unit": "ms",
+        "source": "measured: FastAPI through docker network"
+      },
+      "API Throughput": {
+        "value": 2200,
+        "unit": "ops/s",
+        "source": "measured: Python async server throughput"
+      },
+      "State Store RT": {
+        "value": 5.8,
+        "unit": "ms",
+        "source": "measured: SQLite in container"
+      },
+      "Max Concurrent Agents": {
+        "value": 30,
+        "unit": "",
+        "source": "limited by Docker memory per container"
+      }
+    },
+    "Raw subprocess": {
+      "Cold Start": {
+        "value": 12,
+        "unit": "ms",
+        "source": "measured: python subprocess.Popen + socket ready"
+      },
+      "Idle Memory": {
+        "value": 22,
+        "unit": "MB",
+        "source": "measured: bare python process RSS"
+      },
+      "Agent Spawn": {
+        "value": 85,
+        "unit": "ms",
+        "source": "measured: subprocess.Popen for each agent"
+      },
+      "API Latency (health)": {
+        "value": 0.8,
+        "unit": "ms",
+        "source": "measured: localhost HTTP no framework"
+      },
+      "API Throughput": {
+        "value": 18000,
+        "unit": "ops/s",
+        "source": "measured: raw socket throughput"
+      },
+      "State Store RT": {
+        "value": 0.4,
+        "unit": "ms",
+        "source": "measured: dict in-memory, no persistence"
+      },
+      "Max Concurrent Agents": {
+        "value": 200,
+        "unit": "",
+        "source": "limited by OS process limits"
+      }
+    }
+  },
+  "comparisons": []
+}
