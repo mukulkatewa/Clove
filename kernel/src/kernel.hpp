@@ -46,6 +46,7 @@ class OpenRouterClient;
 class SandboxManager;
 class OpenClawManager;
 class DaemonManager;
+class AnthropicClient;
 struct KernelContext;
 struct Manifest;
 
@@ -107,6 +108,7 @@ private:
     std::unique_ptr<SandboxManager> sandbox_manager_;
     std::unique_ptr<OpenClawManager> openclaw_manager_;
     std::unique_ptr<DaemonManager> daemon_manager_;
+    std::unique_ptr<AnthropicClient> anthropic_client_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

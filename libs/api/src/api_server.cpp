@@ -25,6 +25,7 @@
 #include <clove/openclaw_manager.hpp>
 #include <clove/mailbox.hpp>
 #include <clove/daemon_manager.hpp>
+#include <clove/anthropic_client.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -1258,9 +1259,10 @@ void ApiServer::setup_routes() {
     // POST /api/think  {"prompt": "...", "model": "optional"}
     // -----------------------------------------------------------------------
     svr.Post("/api/think", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+        bool has_llm = (ctx_.openrouter && ctx_.openrouter->is_configured()) || (ctx_.anthropic && ctx_.anthropic->is_configured());
+        if (!has_llm) {
             res.status = 503;
-            res.set_content(R"({"error":"LLM not configured. Set OPENROUTER_API_KEY."})", "application/json");
+            res.set_content(R"({"error":"No LLM configured. Set OPENROUTER_API_KEY or add a provider key via /api/providers."})", "application/json");
             return;
         }
         try {
@@ -1284,12 +1286,41 @@ void ApiServer::setup_routes() {
                 pii_count = pii_result.matches.size();
             }
 
-            // Call LLM
+            // Call LLM — try native Anthropic first for Claude models
+            bool is_claude = model.find("claude") != std::string::npos || model.find("anthropic") != std::string::npos;
+            bool use_native_anthropic = is_claude && ctx_.anthropic && ctx_.anthropic->is_configured();
+
             OpenRouterResponse llm_resp;
-            if (!messages.empty()) {
-                llm_resp = ctx_.openrouter->chat_messages(model, messages);
+
+            if (use_native_anthropic) {
+                // ── Native Anthropic API — no middleman ──
+                spdlog::info("Routing to native Anthropic API: {}", model);
+                AnthropicResponse ar;
+                if (!messages.empty()) {
+                    ar = ctx_.anthropic->chat(model, messages);
+                } else {
+                    ar = ctx_.anthropic->ask(model, filtered);
+                }
+                // Convert to OpenRouterResponse for compatibility
+                llm_resp.success = ar.success;
+                llm_resp.content = ar.content;
+                llm_resp.model_used = ar.model_used;
+                llm_resp.usage.prompt_tokens = ar.input_tokens;
+                llm_resp.usage.completion_tokens = ar.output_tokens;
+                llm_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+                llm_resp.usage.cost_usd = ar.cost_usd;
+                llm_resp.error = ar.error;
+            } else if (ctx_.openrouter && ctx_.openrouter->is_configured()) {
+                // ── OpenRouter fallback ──
+                if (!messages.empty()) {
+                    llm_resp = ctx_.openrouter->chat_messages(model, messages);
+                } else {
+                    llm_resp = ctx_.openrouter->chat(model, filtered);
+                }
             } else {
-                llm_resp = ctx_.openrouter->chat(model, filtered);
+                res.status = 503;
+                res.set_content(R"({"error":"No LLM configured. Add a provider key or set OPENROUTER_API_KEY."})", "application/json");
+                return;
             }
 
             // Track cost
@@ -1304,6 +1335,7 @@ void ApiServer::setup_routes() {
                     {"tokens", llm_resp.usage.total_tokens},
                     {"cost_usd", llm_resp.usage.cost_usd},
                     {"prompt_len", filtered.size()},
+                    {"provider", use_native_anthropic ? "anthropic" : "openrouter"},
                 });
 
             json j;

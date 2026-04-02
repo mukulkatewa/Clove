@@ -33,6 +33,7 @@ class OpenClawManager;
 class SandboxManager;
 class AgentMailboxRegistry;
 class DaemonManager;
+class AnthropicClient;
 
 struct ApiContext {
     KernelConfig& config;
@@ -60,6 +61,7 @@ struct ApiContext {
     SandboxManager* sandbox_manager; // nullable
     AgentMailboxRegistry* mailbox;   // nullable
     DaemonManager* daemon_manager;   // nullable
+    AnthropicClient* anthropic;      // nullable — native Claude API
 };
 
 class ApiServer {
