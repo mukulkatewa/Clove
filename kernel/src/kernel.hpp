@@ -45,6 +45,7 @@ class AgentScheduler;
 class OpenRouterClient;
 class SandboxManager;
 class OpenClawManager;
+class DaemonManager;
 struct KernelContext;
 struct Manifest;
 
@@ -105,6 +106,7 @@ private:
     std::shared_ptr<OpenRouterClient> openrouter_;
     std::unique_ptr<SandboxManager> sandbox_manager_;
     std::unique_ptr<OpenClawManager> openclaw_manager_;
+    std::unique_ptr<DaemonManager> daemon_manager_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

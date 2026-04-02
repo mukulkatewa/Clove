@@ -37,6 +37,7 @@
 #include <clove/agent_scheduler.hpp>
 #include <clove/sandbox.hpp>
 #include <clove/openclaw_manager.hpp>
+#include <clove/daemon_manager.hpp>
 
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -416,6 +417,10 @@ bool Kernel::init() {
     openclaw_manager_ = std::make_unique<OpenClawManager>(
         *sandbox_manager_, *audit_logger_, config_);
 
+    // Create daemon manager
+    daemon_manager_ = std::make_unique<DaemonManager>(
+        *state_store_, *audit_logger_, memory_block_store_.get());
+
     // Start API server
     if (config_.api_enabled) {
         ApiContext api_ctx{
@@ -426,7 +431,7 @@ bool Kernel::init() {
             llm_queue_.get(), artifact_store_.get(), chain_store_.get(),
             context_assembler_.get(), memory_block_store_.get(), openrouter_.get(),
             openclaw_manager_.get(), sandbox_manager_.get(),
-            mailbox_registry_.get()
+            mailbox_registry_.get(), daemon_manager_.get()
         };
         api_server_ = std::make_unique<ApiServer>(api_ctx);
         if (api_server_->start(config_.api_port, config_.api_key)) {

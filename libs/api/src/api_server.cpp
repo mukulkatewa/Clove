@@ -24,6 +24,7 @@
 #include <clove/run_engine.hpp>
 #include <clove/openclaw_manager.hpp>
 #include <clove/mailbox.hpp>
+#include <clove/daemon_manager.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -631,6 +632,68 @@ void ApiServer::setup_routes() {
         json j;
         j["success"] = ok;
         j["entry_count"] = ctx_.execution_logger.entry_count();
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Daemon Agents — always-on tick-based agents
+    // -----------------------------------------------------------------------
+
+    // GET /api/daemons — list all running daemons
+    svr.Get("/api/daemons", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; res.set_content(R"({"error":"daemon manager not available"})", "application/json"); return; }
+        json j;
+        j["daemons"] = ctx_.daemon_manager->list_daemons();
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // GET /api/daemons/:name — get daemon state
+    svr.Get(R"(/api/daemons/([a-z0-9_-]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; return; }
+        auto name = req.matches[1].str();
+        res.set_content(ctx_.daemon_manager->get_state(name).dump(), "application/json");
+    });
+
+    // POST /api/daemons/:name/start — start daemon for agent
+    svr.Post(R"(/api/daemons/([a-z0-9_-]+)/start)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; return; }
+        auto name = req.matches[1].str();
+        bool ok = ctx_.daemon_manager->start_daemon(name);
+        json j;
+        j["success"] = ok;
+        j["agent_name"] = name;
+        j["status"] = ok ? "started" : "failed";
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // POST /api/daemons/:name/stop — stop daemon
+    svr.Post(R"(/api/daemons/([a-z0-9_-]+)/stop)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; return; }
+        auto name = req.matches[1].str();
+        bool ok = ctx_.daemon_manager->stop_daemon(name);
+        json j;
+        j["success"] = ok;
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // GET /api/daemons/:name/logs — get daemon logs
+    svr.Get(R"(/api/daemons/([a-z0-9_-]+)/logs)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; return; }
+        auto name = req.matches[1].str();
+        int limit = 50;
+        if (req.has_param("limit")) limit = std::stoi(req.get_param_value("limit"));
+        json j;
+        j["logs"] = ctx_.daemon_manager->get_logs(name, limit);
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // POST /api/daemons/:name/dream — trigger memory consolidation
+    svr.Post(R"(/api/daemons/([a-z0-9_-]+)/dream)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.daemon_manager) { res.status = 501; return; }
+        auto name = req.matches[1].str();
+        bool ok = ctx_.daemon_manager->dream(name);
+        json j;
+        j["success"] = ok;
         res.set_content(j.dump(), "application/json");
     });
 

@@ -32,6 +32,7 @@ class OpenRouterClient;
 class OpenClawManager;
 class SandboxManager;
 class AgentMailboxRegistry;
+class DaemonManager;
 
 struct ApiContext {
     KernelConfig& config;
@@ -58,6 +59,7 @@ struct ApiContext {
     OpenClawManager* openclaw;       // nullable
     SandboxManager* sandbox_manager; // nullable
     AgentMailboxRegistry* mailbox;   // nullable
+    DaemonManager* daemon_manager;   // nullable
 };
 
 class ApiServer {
