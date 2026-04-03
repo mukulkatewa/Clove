@@ -462,13 +462,15 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
 
     // ── MCP tools (dynamically discovered) ──
     if (mcp_) {
-        auto mcp_tools = mcp_->list_tools();
+        auto mcp_tools = mcp_->list_tools(agent_id_, active_cfg_->agent_name);
         for (const auto& t : mcp_tools) {
             std::string full_name = "mcp_" + t.server_name + "_" + t.name;
-            // Only add if allowed (or no filter)
+            // Only add if allowed (or no filter).
+            // Match against full tool name, "mcp" wildcard, or bare server name (e.g. "github").
             if (!allowed.empty() &&
                 std::find(allowed.begin(), allowed.end(), full_name) == allowed.end() &&
-                std::find(allowed.begin(), allowed.end(), "mcp") == allowed.end()) {
+                std::find(allowed.begin(), allowed.end(), "mcp") == allowed.end() &&
+                std::find(allowed.begin(), allowed.end(), t.server_name) == allowed.end()) {
                 continue;
             }
             tools.push_back({

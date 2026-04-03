@@ -26,6 +26,7 @@
 #include <clove/mailbox.hpp>
 #include <clove/daemon_manager.hpp>
 #include <clove/anthropic_client.hpp>
+#include <clove/state_store_db.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -366,12 +367,16 @@ void ApiServer::setup_routes() {
     // POST /api/agent-defs/:name/run — manually trigger
     // -----------------------------------------------------------------------
     svr.Get("/api/agent-defs", [this](const httplib::Request&, httplib::Response& res) {
-        auto keys = ctx_.state_store.keys("agent-def:", 0);
         json agents = json::array();
-        for (const auto& key : keys) {
-            auto val = ctx_.state_store.fetch(key, 0);
-            if (val.has_value()) {
-                try { agents.push_back(json::parse(val.value().dump())); } catch (...) {}
+        if (ctx_.persistent_store) {
+            for (const auto& key : ctx_.persistent_store->keys("agent-def:")) {
+                auto val = ctx_.persistent_store->fetch(key);
+                if (val.has_value()) agents.push_back(val.value());
+            }
+        } else {
+            for (const auto& key : ctx_.state_store.keys("agent-def:", 0)) {
+                auto val = ctx_.state_store.fetch(key, 0);
+                if (val.has_value()) agents.push_back(val.value());
             }
         }
         json resp;
@@ -389,9 +394,14 @@ void ApiServer::setup_routes() {
                 res.set_content(R"({"error":"name is required"})", "application/json");
                 return;
             }
-            body["created_at"] = body.value("created_at", "");
+            if (body.value("created_at", std::string{}).empty())
+                body["created_at"] = "";
             body["updated_at"] = "";
-            ctx_.state_store.store("agent-def:" + name, body, 0);
+            std::string key = "agent-def:" + name;
+            if (ctx_.persistent_store)
+                ctx_.persistent_store->store(key, body, 0, "global");
+            else
+                ctx_.state_store.store(key, body, 0);
             res.status = 201;
             res.set_content(body.dump(), "application/json");
         } catch (const std::exception& e) {
@@ -402,7 +412,10 @@ void ApiServer::setup_routes() {
 
     svr.Get(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        auto val = ctx_.state_store.fetch("agent-def:" + name, 0);
+        std::string key = "agent-def:" + name;
+        std::optional<json> val = ctx_.persistent_store
+            ? ctx_.persistent_store->fetch(key)
+            : ctx_.state_store.fetch(key, 0);
         if (val.has_value()) {
             res.set_content(val.value().dump(), "application/json");
         } else {
@@ -416,7 +429,11 @@ void ApiServer::setup_routes() {
             std::string name = req.matches[1];
             auto body = json::parse(req.body);
             body["name"] = name;
-            ctx_.state_store.store("agent-def:" + name, body, 0);
+            std::string key = "agent-def:" + name;
+            if (ctx_.persistent_store)
+                ctx_.persistent_store->store(key, body, 0, "global");
+            else
+                ctx_.state_store.store(key, body, 0);
             res.set_content(body.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
@@ -426,14 +443,21 @@ void ApiServer::setup_routes() {
 
     svr.Delete(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        ctx_.state_store.erase("agent-def:" + name, 0);
+        std::string key = "agent-def:" + name;
+        if (ctx_.persistent_store)
+            ctx_.persistent_store->erase(key);
+        else
+            ctx_.state_store.erase(key, 0);
         res.set_content(R"({"success":true})", "application/json");
     });
 
     // Manually trigger a defined agent
     svr.Post(R"(/api/agent-defs/([^/]+)/run)", [this](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        auto val = ctx_.state_store.fetch("agent-def:" + name, 0);
+        std::string key = "agent-def:" + name;
+        auto val = ctx_.persistent_store
+            ? ctx_.persistent_store->fetch(key)
+            : ctx_.state_store.fetch(key, 0);
         if (!val.has_value()) {
             res.status = 404;
             res.set_content(R"({"error":"agent definition not found"})", "application/json");
@@ -909,6 +933,159 @@ void ApiServer::setup_routes() {
         }
     });
 
+    // -----------------------------------------------------------------------
+    // Worlds — list agent defs assigned to a world
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/worlds/(\d+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string key = "world-agents:" + std::string(req.matches[1]);
+        json agents = json::array();
+        auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(key)
+                                            : ctx_.state_store.fetch(key, 0);
+        if (stored.has_value() && stored.value().is_array()) agents = stored.value();
+        res.set_content(agents.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Worlds — assign agent def to a world
+    // -----------------------------------------------------------------------
+    svr.Post(R"(/api/worlds/(\d+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t world_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        try {
+            auto body = json::parse(req.body);
+            std::string agent_name = body.value("agent", "");
+            if (agent_name.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"agent name required"})", "application/json");
+                return;
+            }
+            // Verify agent def exists
+            std::string def_key = "agent-def:" + agent_name;
+            auto def = ctx_.persistent_store ? ctx_.persistent_store->fetch(def_key)
+                                             : ctx_.state_store.fetch(def_key, 0);
+            if (!def.has_value()) {
+                res.status = 404;
+                res.set_content(R"({"error":"agent definition not found"})", "application/json");
+                return;
+            }
+            // Load current list and append if not already there
+            std::string wkey = "world-agents:" + std::to_string(world_id);
+            auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
+                                                : ctx_.state_store.fetch(wkey, 0);
+            json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
+            bool already = false;
+            for (const auto& a : agents) if (a.get<std::string>() == agent_name) { already = true; break; }
+            if (!already) {
+                agents.push_back(agent_name);
+                if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, agents, 0, "global");
+                else ctx_.state_store.store(wkey, agents, 0);
+                // Also update agent def's world field
+                auto updated_def = def.value();
+                if (!updated_def.contains("action")) updated_def["action"] = json::object();
+                updated_def["action"]["world"] = std::to_string(world_id);
+                if (ctx_.persistent_store) ctx_.persistent_store->store(def_key, updated_def, 0, "global");
+                else ctx_.state_store.store(def_key, updated_def, 0);
+            }
+            res.set_content(agents.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Worlds — remove agent def from a world
+    // -----------------------------------------------------------------------
+    svr.Delete(R"(/api/worlds/(\d+)/agents/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        uint32_t world_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+        std::string agent_name = req.matches[2];
+        std::string wkey = "world-agents:" + std::to_string(world_id);
+        auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
+                                            : ctx_.state_store.fetch(wkey, 0);
+        json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
+        json filtered = json::array();
+        for (const auto& a : agents) if (a.get<std::string>() != agent_name) filtered.push_back(a);
+        if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, filtered, 0, "global");
+        else ctx_.state_store.store(wkey, filtered, 0);
+        res.set_content(filtered.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Swarms — CRUD (a swarm is a named group of agent defs in a world)
+    // -----------------------------------------------------------------------
+    svr.Get("/api/swarms", [this](const httplib::Request&, httplib::Response& res) {
+        json swarms = json::array();
+        auto keys = ctx_.persistent_store ? ctx_.persistent_store->keys("swarm:")
+                                          : ctx_.state_store.keys("swarm:", 0);
+        for (const auto& k : keys) {
+            auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch(k)
+                                           : ctx_.state_store.fetch(k, 0);
+            if (v.has_value()) swarms.push_back(v.value());
+        }
+        res.set_content(swarms.dump(), "application/json");
+    });
+
+    svr.Post("/api/swarms", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            std::string name = body.value("name", "");
+            if (name.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"name required"})", "application/json");
+                return;
+            }
+            body["created_at"] = body.value("created_at", "");
+            std::string key = "swarm:" + name;
+            if (ctx_.persistent_store) ctx_.persistent_store->store(key, body, 0, "global");
+            else ctx_.state_store.store(key, body, 0);
+            res.status = 201;
+            res.set_content(body.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Delete(R"(/api/swarms/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string key = "swarm:" + std::string(req.matches[1]);
+        if (ctx_.persistent_store) ctx_.persistent_store->erase(key);
+        else ctx_.state_store.erase(key, 0);
+        res.set_content(R"({"success":true})", "application/json");
+    });
+
+    svr.Post(R"(/api/swarms/([^/]+)/start)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string swarm_name = req.matches[1];
+        std::string key = "swarm:" + swarm_name;
+        auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch(key)
+                                       : ctx_.state_store.fetch(key, 0);
+        if (!v.has_value()) {
+            res.status = 404;
+            res.set_content(R"({"error":"swarm not found"})", "application/json");
+            return;
+        }
+        auto swarm = v.value();
+        // Build a fleet request from the swarm definition
+        json fleet;
+        fleet["goal"] = swarm.value("goal", "Execute swarm: " + swarm_name);
+        fleet["world"] = swarm.value("world", swarm_name);
+        fleet["budget"] = swarm.value("budget", 2.0);
+        fleet["agents"] = swarm.value("agents", json::array()).size();
+        json agent_configs = json::array();
+        for (const auto& a : swarm.value("agents", json::array())) {
+            json ac;
+            ac["name"] = a;
+            ac["role"] = "agent";
+            agent_configs.push_back(ac);
+        }
+        fleet["agent_configs"] = agent_configs;
+        // Forward to the fleet endpoint internally — just return the fleet config for now
+        // and let the client call /api/fleet directly with this payload
+        json result;
+        result["swarm"] = swarm_name;
+        result["fleet_request"] = fleet;
+        result["message"] = "POST this fleet_request to /api/fleet to launch";
+        res.set_content(result.dump(), "application/json");
+    });
+
     // ===================================================================
     // Dashboard — serve embedded HTML pages
     // ===================================================================
@@ -955,23 +1132,30 @@ void ApiServer::setup_routes() {
     // -- Agent count fragment --
     svr.Get("/api/fragments/agent-count", [this](const httplib::Request&, httplib::Response& res) {
         auto agents = ctx_.agent_manager.list_agents();
-        res.set_content(std::to_string(agents.size()) + " total", "text/html");
+        size_t def_count = ctx_.persistent_store
+            ? ctx_.persistent_store->keys("agent-def:").size()
+            : ctx_.state_store.keys("agent-def:", 0).size();
+        size_t total = agents.size() + def_count;
+        res.set_content(std::to_string(total) + " total", "text/html");
     });
 
     // -- Agent list fragment (sidebar items) --
     svr.Get("/api/fragments/agents", [this](const httplib::Request&, httplib::Response& res) {
         auto agents = ctx_.agent_manager.list_agents();
-        if (agents.empty()) {
+        auto def_keys = ctx_.persistent_store
+            ? ctx_.persistent_store->keys("agent-def:")
+            : ctx_.state_store.keys("agent-def:", 0);
+        if (agents.empty() && def_keys.empty()) {
             res.set_content(R"(<div class="empty-state">No agents running</div>)", "text/html");
             return;
         }
         std::ostringstream html;
+        // Running subprocess agents
         for (const auto& agent : agents) {
             auto metrics = agent->get_metrics();
             auto state = agent_state_to_string(agent->state());
             std::string state_lower = state;
             std::transform(state_lower.begin(), state_lower.end(), state_lower.begin(), ::tolower);
-
             html << R"(<div class="agent-item">)"
                  << R"(<div class="agent-info">)"
                  << R"(<div class="agent-name">)" << agent->name() << "</div>"
@@ -982,58 +1166,97 @@ void ApiServer::setup_routes() {
                  << R"(<span class="badge badge-)" << state_lower << R"(">)" << state << "</span>"
                  << "</div>";
         }
+        // Defined (registry) agents from persistent store
+        for (const auto& key : def_keys) {
+            auto val = ctx_.persistent_store
+                ? ctx_.persistent_store->fetch(key)
+                : ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            std::string name = key.substr(std::string("agent-def:").size());
+            bool enabled = val.value().value("enabled", false);
+            std::string badge = enabled ? "running" : "stopped";
+            std::string label = enabled ? "ENABLED" : "DISABLED";
+            html << R"(<div class="agent-item">)"
+                 << R"(<div class="agent-info">)"
+                 << R"(<div class="agent-name">)" << name << "</div>"
+                 << R"(<div class="agent-meta">definition | cron/webhook</div>)"
+                 << "</div>"
+                 << R"(<span class="badge badge-)" << badge << R"(">)" << label << "</span>"
+                 << "</div>";
+        }
         res.set_content(html.str(), "text/html");
     });
 
     // -- Agent table fragment (full table for agents page) --
     svr.Get("/api/fragments/agent-table", [this](const httplib::Request&, httplib::Response& res) {
         auto agents = ctx_.agent_manager.list_agents();
-        if (agents.empty()) {
+        auto def_keys = ctx_.persistent_store
+            ? ctx_.persistent_store->keys("agent-def:")
+            : ctx_.state_store.keys("agent-def:", 0);
+        if (agents.empty() && def_keys.empty()) {
             res.set_content(R"(<div class="empty-state">No agents running. Use the form above to spawn one.</div>)", "text/html");
             return;
         }
         std::ostringstream html;
         html << "<table><thead><tr>"
-             << "<th>ID</th><th>Name</th><th>State</th><th>PID</th>"
-             << "<th>Uptime</th><th>Memory</th><th>CPU</th><th>LLM Calls</th><th>Actions</th>"
+             << "<th>Name</th><th>Type</th><th>State</th>"
+             << "<th>Triggers</th><th>Budget/run</th><th>Actions</th>"
              << "</tr></thead><tbody>";
+        // Running subprocess agents
         for (const auto& agent : agents) {
             auto m = agent->get_metrics();
             auto state = agent_state_to_string(agent->state());
             std::string state_lower = state;
             std::transform(state_lower.begin(), state_lower.end(), state_lower.begin(), ::tolower);
-
-            // Format uptime
             std::ostringstream uptime;
             auto total_sec = static_cast<int>(m.uptime_seconds);
-            auto h = total_sec / 3600;
-            auto min = (total_sec % 3600) / 60;
-            auto sec = total_sec % 60;
-            uptime << std::setfill('0') << std::setw(2) << h << ":"
-                   << std::setw(2) << min << ":" << std::setw(2) << sec;
-
-            // Format memory
-            std::ostringstream mem;
-            if (m.memory_bytes > 1048576)
-                mem << std::fixed << std::setprecision(1) << (m.memory_bytes / 1048576.0) << " MB";
-            else if (m.memory_bytes > 1024)
-                mem << std::fixed << std::setprecision(1) << (m.memory_bytes / 1024.0) << " KB";
-            else
-                mem << m.memory_bytes << " B";
-
+            uptime << std::setfill('0') << std::setw(2) << total_sec/3600 << ":"
+                   << std::setw(2) << (total_sec%3600)/60 << ":" << std::setw(2) << total_sec%60;
             html << "<tr>"
-                 << "<td>" << agent->id() << "</td>"
-                 << "<td><strong>" << agent->name() << "</strong></td>"
+                 << "<td><strong>" << agent->name() << "</strong><br><small>PID " << agent->pid() << " · " << uptime.str() << "</small></td>"
+                 << "<td>subprocess</td>"
                  << R"(<td><span class="badge badge-)" << state_lower << R"(">)" << state << "</span></td>"
-                 << "<td>" << agent->pid() << "</td>"
-                 << "<td>" << uptime.str() << "</td>"
-                 << "<td>" << mem.str() << "</td>"
-                 << "<td>" << std::fixed << std::setprecision(1) << m.cpu_percent << "%</td>"
-                 << "<td>" << m.llm_request_count << "</td>"
+                 << "<td>—</td><td>—</td>"
                  << R"(<td><button class="btn-danger" )"
                  << R"(hx-delete="/api/agents/)" << agent->id() << R"(" )"
-                 << R"(hx-confirm="Kill agent ')" << agent->name() << R"(' (ID )" << agent->id() << R"()?" )"
+                 << R"(hx-confirm="Kill agent ')" << agent->name() << R"('?" )"
                  << R"(hx-target="closest tr" hx-swap="outerHTML">Kill</button></td>)"
+                 << "</tr>";
+        }
+        // Defined agents from persistent store
+        for (const auto& key : def_keys) {
+            auto val = ctx_.persistent_store
+                ? ctx_.persistent_store->fetch(key)
+                : ctx_.state_store.fetch(key, 0);
+            if (!val.has_value()) continue;
+            std::string name = key.substr(std::string("agent-def:").size());
+            bool enabled = val.value().value("enabled", false);
+            std::string badge = enabled ? "running" : "stopped";
+            std::string label = enabled ? "ENABLED" : "DISABLED";
+            // Collect trigger summary
+            std::string triggers = "—";
+            if (val.value().contains("triggers") && val.value()["triggers"].is_array()) {
+                std::ostringstream trig;
+                for (const auto& t : val.value()["triggers"]) {
+                    std::string type = t.value("type", "");
+                    if (type == "cron") trig << "cron(" << t.value("schedule","?") << ") ";
+                    else if (type == "webhook") trig << "webhook(" << t.value("source","?") << ") ";
+                    else trig << type << " ";
+                }
+                triggers = trig.str();
+            }
+            std::string budget = "—";
+            if (val.value().contains("budget"))
+                budget = "$" + std::to_string(val.value()["budget"].value("per_run", 0.0)).substr(0, 6) + "/run";
+            html << "<tr>"
+                 << "<td><strong>" << name << "</strong><br><small>" << val.value().value("description","") << "</small></td>"
+                 << "<td>definition</td>"
+                 << R"(<td><span class="badge badge-)" << badge << R"(">)" << label << "</span></td>"
+                 << "<td><small>" << triggers << "</small></td>"
+                 << "<td>" << budget << "</td>"
+                 << R"(<td><button class="btn btn-primary" style="font-size:11px" )"
+                 << R"(hx-post="/api/agent-defs/)" << name << R"(/run" )"
+                 << R"(hx-target="#spawn-result" hx-swap="innerHTML">Run</button></td>)"
                  << "</tr>";
         }
         html << "</tbody></table>";

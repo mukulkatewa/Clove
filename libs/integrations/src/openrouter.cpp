@@ -131,6 +131,9 @@ OpenRouterResponse OpenRouterClient::chat_messages(const std::string& model,
     }
 
     std::string model_to_use = model.empty() ? config_.default_model : model;
+    // Normalize bare claude-* IDs to OpenRouter's anthropic/ namespace
+    if (model_to_use.rfind("claude-", 0) == 0 && model_to_use.find('/') == std::string::npos)
+        model_to_use = "anthropic/" + model_to_use;
 
     nlohmann::json body;
     body["model"] = model_to_use;

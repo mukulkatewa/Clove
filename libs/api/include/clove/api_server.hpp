@@ -34,6 +34,7 @@ class SandboxManager;
 class AgentMailboxRegistry;
 class DaemonManager;
 class AnthropicClient;
+class StateStoreDb;
 
 struct ApiContext {
     KernelConfig& config;
@@ -62,6 +63,7 @@ struct ApiContext {
     AgentMailboxRegistry* mailbox;   // nullable
     DaemonManager* daemon_manager;   // nullable
     AnthropicClient* anthropic;      // nullable — native Claude API
+    StateStoreDb*    persistent_store; // nullable — SQLite-backed agent-defs persistence
 };
 
 class ApiServer {

@@ -503,7 +503,8 @@ bool Kernel::init() {
             context_assembler_.get(), memory_block_store_.get(), openrouter_.get(),
             openclaw_manager_.get(), sandbox_manager_.get(),
             mailbox_registry_.get(), daemon_manager_.get(),
-            anthropic_client_.get()
+            anthropic_client_.get(),
+            state_store_db_.get()
         };
         api_server_ = std::make_unique<ApiServer>(api_ctx);
         if (api_server_->start(config_.api_port, config_.api_key)) {
