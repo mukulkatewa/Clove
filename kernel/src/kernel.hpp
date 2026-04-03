@@ -30,6 +30,13 @@ class KernelModule;
 class Database;
 class AuditStore;
 class StateStoreDb;
+class SupabaseSync;
+class WorkspaceDb;
+class AgentDefDb;
+class WorkspaceDataDb;
+class WorkspaceOutputDb;
+class AgentRunDb;
+class SwarmDb;
 class McpBridge;
 class A2aBridge;
 class TunnelBridge;
@@ -47,6 +54,7 @@ class SandboxManager;
 class OpenClawManager;
 class DaemonManager;
 class AnthropicClient;
+class JobQueue;
 struct KernelContext;
 struct Manifest;
 
@@ -92,6 +100,13 @@ private:
     std::unique_ptr<Database> database_;
     std::unique_ptr<AuditStore> audit_store_;
     std::unique_ptr<StateStoreDb> state_store_db_;
+    std::unique_ptr<SupabaseSync> supabase_sync_;
+    std::unique_ptr<WorkspaceDb> workspace_db_;
+    std::unique_ptr<AgentDefDb> agent_def_db_;
+    std::unique_ptr<WorkspaceDataDb> ws_data_db_;
+    std::unique_ptr<WorkspaceOutputDb> ws_output_db_;
+    std::unique_ptr<AgentRunDb> agent_run_db_;
+    std::unique_ptr<SwarmDb> swarm_db_;
     std::unique_ptr<McpBridge> mcp_bridge_;
     std::unique_ptr<A2aBridge> a2a_bridge_;
     std::unique_ptr<TunnelBridge> tunnel_bridge_;
@@ -109,6 +124,7 @@ private:
     std::unique_ptr<OpenClawManager> openclaw_manager_;
     std::unique_ptr<DaemonManager> daemon_manager_;
     std::unique_ptr<AnthropicClient> anthropic_client_;
+    std::unique_ptr<JobQueue> job_queue_;
 
     // Routing
     std::unique_ptr<SyscallRouter> syscall_router_;

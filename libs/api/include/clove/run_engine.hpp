@@ -11,6 +11,7 @@ namespace clove {
 
 // Forward declarations
 class OpenRouterClient;
+class AnthropicClient;
 class InferenceGateway;
 class PrivacyFilter;
 class AuditLogger;
@@ -39,6 +40,8 @@ struct RunConfig {
     std::string chain_id;        // If empty, engine creates one
     int max_depth = 3;           // Max sub-agent nesting depth
     int current_depth = 0;       // Current nesting level (0 = top-level)
+    std::string workspace_id;    // If set, output is scoped to this workspace
+    std::string run_id;          // Unique run identifier; auto-generated if empty
 };
 
 /// Result of a completed run.
@@ -62,6 +65,7 @@ class RunEngine {
 public:
     RunEngine(
         OpenRouterClient& openrouter,
+        AnthropicClient*  anthropic,   // nullable — used for claude-* models
         InferenceGateway& gateway,
         PrivacyFilter& privacy,
         AuditLogger& audit,
@@ -84,6 +88,7 @@ public:
 
 private:
     OpenRouterClient& openrouter_;
+    AnthropicClient*  anthropic_;
     InferenceGateway& gateway_;
     PrivacyFilter& privacy_;
     AuditLogger& audit_;
@@ -109,7 +114,7 @@ private:
     std::string tool_write_file(const std::string& path, const std::string& content);
     std::string tool_edit_file(const std::string& path, const std::string& old_string, const std::string& new_string);
     std::string tool_exec(const std::string& command);
-    std::string tool_http(const std::string& url, const std::string& method, const std::string& body);
+    std::string tool_http(const std::string& url, const std::string& method, const std::string& body, const nlohmann::json& headers = nlohmann::json::object());
     std::string tool_search(const std::string& query, const std::string& model, double& cost, int& tokens);
     std::string tool_mcp_call(const std::string& server, const std::string& tool, const nlohmann::json& args);
     std::string tool_delegate(const nlohmann::json& args, const std::string& model, double& cost, int& tokens);

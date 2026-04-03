@@ -105,14 +105,54 @@ AnthropicResponse AnthropicClient::chat(const std::string& model,
     json body;
     body["model"] = resolved;
     body["max_tokens"] = max_tokens;
-    body["messages"] = messages;
 
-    if (!system_prompt.empty()) {
-        body["system"] = system_prompt;
+    // Strip system messages from messages array, use Anthropic's top-level system param
+    json filtered_messages = json::array();
+    std::string extracted_system = system_prompt;
+    for (auto& msg : messages) {
+        std::string role = msg.value("role", "");
+        if (role == "system") {
+            std::string sc = msg.value("content", "");
+            if (!sc.empty()) {
+                if (!extracted_system.empty()) extracted_system += "\n";
+                extracted_system += sc;
+            }
+        } else if (role == "tool") {
+            // Convert OpenAI tool result format to Anthropic tool_result format
+            json converted;
+            converted["role"] = "user";
+            json tool_result_block;
+            tool_result_block["type"] = "tool_result";
+            tool_result_block["tool_use_id"] = msg.value("tool_call_id", "");
+            tool_result_block["content"] = msg.value("content", "");
+            converted["content"] = json::array({tool_result_block});
+            filtered_messages.push_back(converted);
+        } else {
+            filtered_messages.push_back(msg);
+        }
+    }
+    body["messages"] = filtered_messages;
+
+    if (!extracted_system.empty()) {
+        body["system"] = extracted_system;
     }
 
+    // Convert OpenAI tools format to Anthropic format
     if (!tools.empty() && tools.is_array() && tools.size() > 0) {
-        body["tools"] = tools;
+        json anthropic_tools = json::array();
+        for (auto& t : tools) {
+            if (t.value("type", "") == "function" && t.contains("function")) {
+                auto& fn = t["function"];
+                json at;
+                at["name"] = fn.value("name", "");
+                at["description"] = fn.value("description", "");
+                at["input_schema"] = fn.value("parameters", json::object());
+                anthropic_tools.push_back(at);
+            }
+        }
+        if (!anthropic_tools.empty()) {
+            body["tools"] = anthropic_tools;
+        }
     }
 
     spdlog::debug("Anthropic API call: model={} messages={} max_tokens={}", resolved, messages.size(), max_tokens);
@@ -139,20 +179,49 @@ AnthropicResponse AnthropicClient::chat(const std::string& model,
         result.model_used = resp.value("model", resolved);
         result.stop_reason = resp.value("stop_reason", "");
 
-        // Extract content — Anthropic returns array of content blocks
+        // Build OpenAI-compatible tool_calls and text content
+        json openai_tool_calls = json::array();
+        std::string text_content;
+
         if (resp.contains("content") && resp["content"].is_array()) {
             for (auto& block : resp["content"]) {
-                if (block.value("type", "") == "text") {
-                    if (!result.content.empty()) result.content += "\n";
-                    result.content += block.value("text", "");
-                }
-                // Tool use blocks
-                if (block.value("type", "") == "tool_use") {
-                    if (!result.content.empty()) result.content += "\n";
-                    result.content += "[tool_use: " + block.value("name", "?") + "]";
+                std::string btype = block.value("type", "");
+                if (btype == "text") {
+                    if (!text_content.empty()) text_content += "\n";
+                    text_content += block.value("text", "");
+                } else if (btype == "tool_use") {
+                    // Convert Anthropic tool_use → OpenAI tool_call
+                    json tc;
+                    tc["id"] = block.value("id", "");
+                    tc["type"] = "function";
+                    json fn;
+                    fn["name"] = block.value("name", "");
+                    // Anthropic returns input as object, OpenAI expects string
+                    fn["arguments"] = block.value("input", json::object()).dump();
+                    tc["function"] = fn;
+                    openai_tool_calls.push_back(tc);
                 }
             }
         }
+
+        result.content = text_content;
+
+        // Build raw_json in OpenAI-compatible format for RunEngine
+        json msg_obj;
+        msg_obj["role"] = "assistant";
+        msg_obj["content"] = text_content;
+        if (!openai_tool_calls.empty()) {
+            msg_obj["tool_calls"] = openai_tool_calls;
+        }
+        std::string finish_reason = result.stop_reason == "tool_use" ? "tool_calls" : "stop";
+        result.raw_json = json({
+            {"choices", json::array({
+                json({
+                    {"message", msg_obj},
+                    {"finish_reason", finish_reason}
+                })
+            })}
+        }).dump();
 
         // Usage
         if (resp.contains("usage")) {
@@ -161,8 +230,8 @@ AnthropicResponse AnthropicClient::chat(const std::string& model,
             result.cost_usd = estimate_cost(resolved, result.input_tokens, result.output_tokens);
         }
 
-        spdlog::info("Anthropic response: model={} in={} out={} cost=${:.6f}",
-            result.model_used, result.input_tokens, result.output_tokens, result.cost_usd);
+        spdlog::info("Anthropic response: model={} in={} out={} stop={} cost=${:.6f}",
+            result.model_used, result.input_tokens, result.output_tokens, result.stop_reason, result.cost_usd);
 
     } catch (const std::exception& e) {
         result.error = std::string("Failed to parse response: ") + e.what();

@@ -3,6 +3,7 @@ add_library(clove_api STATIC
     src/run_engine.cpp
     src/openclaw_manager.cpp
     src/daemon_manager.cpp
+    src/job_queue.cpp
 )
 target_include_directories(clove_api PUBLIC include)
 target_link_libraries(clove_api PUBLIC

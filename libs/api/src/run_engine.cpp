@@ -1,5 +1,6 @@
 #include <clove/run_engine.hpp>
 #include <clove/openrouter.hpp>
+#include <clove/anthropic_client.hpp>
 #include <clove/inference_gateway.hpp>
 #include <clove/privacy_filter.hpp>
 #include <clove/audit_log.hpp>
@@ -36,6 +37,7 @@ static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata
 
 RunEngine::RunEngine(
     OpenRouterClient& openrouter,
+    AnthropicClient*  anthropic,
     InferenceGateway& gateway,
     PrivacyFilter& privacy,
     AuditLogger& audit,
@@ -48,6 +50,7 @@ RunEngine::RunEngine(
     ContextAssembler* assembler,
     const KernelConfig& config)
     : openrouter_(openrouter)
+    , anthropic_(anthropic)
     , gateway_(gateway)
     , privacy_(privacy)
     , audit_(audit)
@@ -199,7 +202,7 @@ std::string RunEngine::tool_exec(const std::string& command) {
     return output;
 }
 
-std::string RunEngine::tool_http(const std::string& url, const std::string& method, const std::string& body) {
+std::string RunEngine::tool_http(const std::string& url, const std::string& method, const std::string& body, const nlohmann::json& headers) {
     // Permission check
     auto& perms = permissions_.get_or_create(agent_id_);
     if (!perms.can_http) {
@@ -237,6 +240,16 @@ std::string RunEngine::tool_http(const std::string& url, const std::string& meth
     // User-Agent for web requests
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLOVE/2.0");
 
+    // Custom headers
+    struct curl_slist* curl_headers = nullptr;
+    if (!headers.empty()) {
+        for (auto& [k, v] : headers.items()) {
+            std::string hdr = k + ": " + v.get<std::string>();
+            curl_headers = curl_slist_append(curl_headers, hdr.c_str());
+        }
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, curl_headers);
+    }
+
     if (method == "POST" || method == "PUT" || method == "PATCH") {
         if (method == "POST") curl_easy_setopt(curl, CURLOPT_POST, 1L);
         else curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method.c_str());
@@ -247,6 +260,7 @@ std::string RunEngine::tool_http(const std::string& url, const std::string& meth
     }
 
     CURLcode res = curl_easy_perform(curl);
+    if (curl_headers) curl_slist_free_all(curl_headers);
     long status = 0;
     if (res == CURLE_OK) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -422,7 +436,8 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
         {{"type", "object"}, {"properties", {
             {"url", {{"type", "string"}, {"description", "URL"}}},
             {"method", {{"type", "string"}, {"description", "HTTP method: GET, POST, PUT, DELETE (default GET)"}}},
-            {"body", {{"type", "string"}, {"description", "Request body (for POST/PUT)"}}}
+            {"body", {{"type", "string"}, {"description", "Request body (for POST/PUT)"}}},
+            {"headers", {{"type", "object"}, {"description", "Optional HTTP headers as key-value pairs, e.g. {\"Authorization\": \"token xyz\", \"Content-Type\": \"application/json\"}"}}}
         }}, {"required", json::array({"url"})}});
 
     add("store", "Store a key-value pair for later retrieval.",
@@ -509,7 +524,8 @@ std::string RunEngine::execute_tool(
         return tool_search(args.value("query", ""), model, cost, tokens);
 
     } else if (name == "http") {
-        return tool_http(args.value("url", ""), args.value("method", "GET"), args.value("body", ""));
+        return tool_http(args.value("url", ""), args.value("method", "GET"), args.value("body", ""),
+                         args.contains("headers") && args["headers"].is_object() ? args["headers"] : json::object());
 
     } else if (name == "store") {
         state_.store(args.value("key", ""), args.value("value", ""), 0);
@@ -778,7 +794,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
                         "Preserve: key findings, actions taken, errors encountered, data discovered. "
                         "Discard: verbose tool output, redundant info. Be brief.\n\n" + history_to_compact;
 
-                    auto compact_resp = openrouter_.chat(cfg.model, compact_prompt);
+                    OpenRouterResponse compact_resp;
+                    if (anthropic_ && anthropic_->is_configured() &&
+                        (cfg.model.find("claude") != std::string::npos || cfg.model.find("anthropic") != std::string::npos)) {
+                        auto ar = anthropic_->ask(cfg.model, compact_prompt);
+                        compact_resp.success = ar.success; compact_resp.content = ar.content;
+                        compact_resp.usage.cost_usd = ar.cost_usd;
+                        compact_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+                    } else {
+                        compact_resp = openrouter_.chat(cfg.model, compact_prompt);
+                    }
                     if (!compact_resp.content.empty()) {
                         result.total_cost_usd += compact_resp.usage.cost_usd;
                         result.total_tokens += compact_resp.usage.total_tokens;
@@ -814,13 +839,33 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             }
         }
 
-        // Call LLM with tools
+        // Call LLM with tools — route to Anthropic native for claude-* models
         json options;
         if (!tools_desc.empty()) {
             options["tools"] = tools_desc;
         }
 
-        auto llm_resp = openrouter_.chat_messages(active_model, messages, options);
+        bool use_anthropic = anthropic_ && anthropic_->is_configured() &&
+            (active_model.find("claude") != std::string::npos ||
+             active_model.find("anthropic") != std::string::npos);
+
+        OpenRouterResponse llm_resp;
+        if (use_anthropic) {
+            auto ar = anthropic_->chat(active_model, messages, 8192,
+                tools_desc.empty() ? json::array() : tools_desc);
+            llm_resp.success = ar.success;
+            llm_resp.content = ar.content;
+            llm_resp.model_used = ar.model_used;
+            llm_resp.usage.prompt_tokens = ar.input_tokens;
+            llm_resp.usage.completion_tokens = ar.output_tokens;
+            llm_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+            llm_resp.usage.cost_usd = ar.cost_usd;
+            llm_resp.error = ar.error;
+            llm_resp.raw_json = ar.raw_json;
+        } else {
+            llm_resp = openrouter_.chat_messages(active_model, messages, options);
+        }
+
         result.total_cost_usd += llm_resp.usage.cost_usd;
         result.total_tokens += llm_resp.usage.total_tokens;
         gateway_.record_cost(llm_resp.usage.cost_usd);
@@ -851,7 +896,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
         auto choice = choices[0];
         auto message = choice.value("message", json::object());
-        std::string finish_reason = choice.value("finish_reason", "");
+
+        // Normalize finish_reason — some free models return null
+        std::string finish_reason;
+        auto fr = choice.find("finish_reason");
+        if (fr != choice.end() && fr->is_string()) finish_reason = fr->get<std::string>();
+
+        // Normalize content — some free models return null instead of ""
+        if (message.contains("content") && message["content"].is_null()) {
+            message["content"] = "";
+        }
 
         messages.push_back(message);
 
@@ -959,7 +1013,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             "What went wrong and what should you do differently on your next attempt? "
             "Be specific and actionable.";
 
-        auto reflection_resp = openrouter_.chat(active_model, reflection_prompt);
+        OpenRouterResponse reflection_resp;
+        if (anthropic_ && anthropic_->is_configured() &&
+            (active_model.find("claude") != std::string::npos || active_model.find("anthropic") != std::string::npos)) {
+            auto ar = anthropic_->ask(active_model, reflection_prompt);
+            reflection_resp.success = ar.success; reflection_resp.content = ar.content;
+            reflection_resp.usage.cost_usd = ar.cost_usd;
+            reflection_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+        } else {
+            reflection_resp = openrouter_.chat(active_model, reflection_prompt);
+        }
         result.total_cost_usd += reflection_resp.usage.cost_usd;
         result.total_tokens += reflection_resp.usage.total_tokens;
 
@@ -1016,7 +1079,27 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
                 json options;
                 if (!tools_desc.empty()) options["tools"] = tools_desc;
 
-                auto llm_resp = openrouter_.chat_messages(active_model, messages, options);
+                bool use_anthropic_r = anthropic_ && anthropic_->is_configured() &&
+                    (active_model.find("claude") != std::string::npos ||
+                     active_model.find("anthropic") != std::string::npos);
+
+                OpenRouterResponse llm_resp;
+                if (use_anthropic_r) {
+                    auto ar = anthropic_->chat(active_model, messages, 8192,
+                        tools_desc.empty() ? json::array() : tools_desc);
+                    llm_resp.success = ar.success;
+                    llm_resp.content = ar.content;
+                    llm_resp.model_used = ar.model_used;
+                    llm_resp.usage.prompt_tokens = ar.input_tokens;
+                    llm_resp.usage.completion_tokens = ar.output_tokens;
+                    llm_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+                    llm_resp.usage.cost_usd = ar.cost_usd;
+                    llm_resp.error = ar.error;
+                    llm_resp.raw_json = ar.raw_json;
+                } else {
+                    llm_resp = openrouter_.chat_messages(active_model, messages, options);
+                }
+
                 result.total_cost_usd += llm_resp.usage.cost_usd;
                 result.total_tokens += llm_resp.usage.total_tokens;
                 gateway_.record_cost(llm_resp.usage.cost_usd);
@@ -1038,10 +1121,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
                 auto choice = choices[0];
                 auto message = choice.value("message", json::object());
+
+                std::string fr2;
+                auto fr2_it = choice.find("finish_reason");
+                if (fr2_it != choice.end() && fr2_it->is_string()) fr2 = fr2_it->get<std::string>();
+
+                if (message.contains("content") && message["content"].is_null()) message["content"] = "";
                 messages.push_back(message);
 
                 auto tool_calls = message.value("tool_calls", json::array());
-                if (tool_calls.empty() || choice.value("finish_reason", "") == "stop") {
+                if (tool_calls.empty() || fr2 == "stop") {
                     if (message.contains("content") && message["content"].is_string()) {
                         result.content = message["content"].get<std::string>();
                     } else {
@@ -1107,14 +1196,14 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
 // ── Standalone wrapper for kernel.cpp (avoids EventCallback conflict with reactor.hpp) ──
 RunResult run_engine_execute_standalone(
-    OpenRouterClient& openrouter, InferenceGateway& inference, PrivacyFilter& privacy,
+    OpenRouterClient& openrouter, AnthropicClient* anthropic, InferenceGateway& inference, PrivacyFilter& privacy,
     AuditLogger& audit, StateStore& state, PermissionsStore& perms,
     ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
     McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
     const std::string& goal, const std::string& model, double budget,
     const std::string& agent_name, const std::vector<std::string>& tools)
 {
-    RunEngine engine(openrouter, inference, privacy, audit, state, perms,
+    RunEngine engine(openrouter, anthropic, inference, privacy, audit, state, perms,
         artifacts, chains, memory, mcp, assembler, config);
     RunConfig cfg;
     cfg.goal = goal;

@@ -27,6 +27,9 @@
 #include <clove/daemon_manager.hpp>
 #include <clove/anthropic_client.hpp>
 #include <clove/state_store_db.hpp>
+#include <clove/workspace_db.hpp>
+#include <clove/supabase_sync.hpp>
+#include <clove/job_queue.hpp>
 
 #include "dashboard_html.hpp"
 
@@ -180,7 +183,7 @@ void ApiServer::run_scheduler() {
                 if (agents > 1 && ctx_.openrouter && ctx_.openrouter->is_configured()) {
                     // Use fleet — but we'd need to call the fleet handler
                     // For now, run as single agent
-                    RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+                    RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                         ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                         ctx_.artifact_store, ctx_.chain_store,
                         ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
@@ -366,9 +369,56 @@ void ApiServer::setup_routes() {
     // DELETE /api/agent-defs/:name — delete
     // POST /api/agent-defs/:name/run — manually trigger
     // -----------------------------------------------------------------------
-    svr.Get("/api/agent-defs", [this](const httplib::Request&, httplib::Response& res) {
+    // Helper: convert AgentDefRow → JSON wire format expected by frontend
+    auto agent_def_row_to_json = [](const AgentDefRow& r) -> json {
+        json j;
+        j["name"]        = r.name;
+        j["description"] = r.description;
+        j["enabled"]     = r.enabled;
+        j["workspace_id"] = r.workspace_id;
+        j["triggers"]    = r.triggers;
+        j["connections"] = r.connections;
+        j["permissions"] = r.permissions;
+        j["created_at"]  = r.created_at;
+        j["updated_at"]  = r.updated_at;
+        j["action"]  = {{"goal", r.goal}, {"tools", r.tools},
+                        {"max_steps", r.max_steps}, {"model", r.model}};
+        j["budget"]  = {{"per_run", r.budget_per_run},
+                        {"daily_max", r.budget_daily_max},
+                        {"daily_spent", r.budget_daily_spent}};
+        return j;
+    };
+
+    // Helper: convert JSON wire format → AgentDefRow
+    auto json_to_agent_def_row = [](const json& body) -> AgentDefRow {
+        AgentDefRow r;
+        r.name        = body.value("name", "");
+        r.description = body.value("description", "");
+        r.enabled     = body.value("enabled", true);
+        r.workspace_id = body.value("workspace_id", "");
+        r.triggers    = body.value("triggers", json::array());
+        r.connections = body.value("connections", json::array());
+        r.permissions = body.value("permissions", json::object());
+        if (body.contains("action")) {
+            r.goal      = body["action"].value("goal", "");
+            r.tools     = body["action"].value("tools", json::array());
+            r.max_steps = body["action"].value("max_steps", 20);
+            r.model     = body["action"].value("model", "");
+        }
+        if (body.contains("budget")) {
+            r.budget_per_run   = body["budget"].value("per_run", 1.0);
+            r.budget_daily_max = body["budget"].value("daily_max", 10.0);
+        }
+        return r;
+    };
+
+    svr.Get("/api/agent-defs", [this, agent_def_row_to_json](const httplib::Request&, httplib::Response& res) {
         json agents = json::array();
-        if (ctx_.persistent_store) {
+        if (ctx_.agent_def_db) {
+            for (const auto& row : ctx_.agent_def_db->list()) {
+                agents.push_back(agent_def_row_to_json(row));
+            }
+        } else if (ctx_.persistent_store) {
             for (const auto& key : ctx_.persistent_store->keys("agent-def:")) {
                 auto val = ctx_.persistent_store->fetch(key);
                 if (val.has_value()) agents.push_back(val.value());
@@ -379,13 +429,10 @@ void ApiServer::setup_routes() {
                 if (val.has_value()) agents.push_back(val.value());
             }
         }
-        json resp;
-        resp["agents"] = agents;
-        resp["count"] = agents.size();
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(json({{"agents", agents}, {"count", agents.size()}}).dump(), "application/json");
     });
 
-    svr.Post("/api/agent-defs", [this](const httplib::Request& req, httplib::Response& res) {
+    svr.Post("/api/agent-defs", [this, json_to_agent_def_row, agent_def_row_to_json](const httplib::Request& req, httplib::Response& res) {
         try {
             auto body = json::parse(req.body);
             std::string name = body.value("name", "");
@@ -394,47 +441,68 @@ void ApiServer::setup_routes() {
                 res.set_content(R"({"error":"name is required"})", "application/json");
                 return;
             }
-            if (body.value("created_at", std::string{}).empty())
-                body["created_at"] = "";
-            body["updated_at"] = "";
-            std::string key = "agent-def:" + name;
-            if (ctx_.persistent_store)
-                ctx_.persistent_store->store(key, body, 0, "global");
-            else
-                ctx_.state_store.store(key, body, 0);
-            res.status = 201;
-            res.set_content(body.dump(), "application/json");
+            if (ctx_.agent_def_db) {
+                auto row = json_to_agent_def_row(body);
+                ctx_.agent_def_db->upsert(row);
+                auto saved = ctx_.agent_def_db->get(row.name);
+                auto saved_json = agent_def_row_to_json(saved.value_or(row));
+                if (ctx_.supabase) ctx_.supabase->upsert("agent_definitions", saved_json);
+                res.status = 201;
+                res.set_content(saved_json.dump(), "application/json");
+            } else {
+                body["updated_at"] = "";
+                std::string key = "agent-def:" + name;
+                if (ctx_.persistent_store) ctx_.persistent_store->store(key, body, 0, "global");
+                else ctx_.state_store.store(key, body, 0);
+                res.status = 201;
+                res.set_content(body.dump(), "application/json");
+            }
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", e.what()}}).dump(), "application/json");
         }
     });
 
-    svr.Get(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+    svr.Get(R"(/api/agent-defs/([^/]+))", [this, agent_def_row_to_json](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        std::string key = "agent-def:" + name;
-        std::optional<json> val = ctx_.persistent_store
-            ? ctx_.persistent_store->fetch(key)
-            : ctx_.state_store.fetch(key, 0);
-        if (val.has_value()) {
-            res.set_content(val.value().dump(), "application/json");
+        if (ctx_.agent_def_db) {
+            auto row = ctx_.agent_def_db->get(name);
+            if (row) {
+                res.set_content(agent_def_row_to_json(*row).dump(), "application/json");
+            } else {
+                res.status = 404;
+                res.set_content(R"({"error":"agent definition not found"})", "application/json");
+            }
         } else {
-            res.status = 404;
-            res.set_content(R"({"error":"agent definition not found"})", "application/json");
+            auto val = ctx_.persistent_store
+                ? ctx_.persistent_store->fetch("agent-def:" + name)
+                : ctx_.state_store.fetch("agent-def:" + name, 0);
+            if (val.has_value()) res.set_content(val.value().dump(), "application/json");
+            else { res.status = 404; res.set_content(R"({"error":"agent definition not found"})", "application/json"); }
         }
     });
 
-    svr.Put(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+    svr.Put(R"(/api/agent-defs/([^/]+))", [this, json_to_agent_def_row, agent_def_row_to_json](const httplib::Request& req, httplib::Response& res) {
         try {
             std::string name = req.matches[1];
             auto body = json::parse(req.body);
             body["name"] = name;
-            std::string key = "agent-def:" + name;
-            if (ctx_.persistent_store)
-                ctx_.persistent_store->store(key, body, 0, "global");
-            else
-                ctx_.state_store.store(key, body, 0);
-            res.set_content(body.dump(), "application/json");
+            if (ctx_.agent_def_db) {
+                // Merge into existing row if present
+                auto existing = ctx_.agent_def_db->get(name);
+                auto row = json_to_agent_def_row(body);
+                if (existing) row.workspace_id = existing->workspace_id; // preserve workspace
+                ctx_.agent_def_db->upsert(row);
+                auto saved = ctx_.agent_def_db->get(name);
+                auto saved_json = agent_def_row_to_json(saved.value_or(row));
+                if (ctx_.supabase) ctx_.supabase->upsert("agent_definitions", saved_json);
+                res.set_content(saved_json.dump(), "application/json");
+            } else {
+                std::string key = "agent-def:" + name;
+                if (ctx_.persistent_store) ctx_.persistent_store->store(key, body, 0, "global");
+                else ctx_.state_store.store(key, body, 0);
+                res.set_content(body.dump(), "application/json");
+            }
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", e.what()}}).dump(), "application/json");
@@ -443,34 +511,57 @@ void ApiServer::setup_routes() {
 
     svr.Delete(R"(/api/agent-defs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        std::string key = "agent-def:" + name;
-        if (ctx_.persistent_store)
-            ctx_.persistent_store->erase(key);
-        else
-            ctx_.state_store.erase(key, 0);
+        if (ctx_.agent_def_db) ctx_.agent_def_db->remove(name);
+        else {
+            if (ctx_.persistent_store) ctx_.persistent_store->erase("agent-def:" + name);
+            else ctx_.state_store.erase("agent-def:" + name, 0);
+        }
+        if (ctx_.supabase) ctx_.supabase->remove("agent_definitions", "name", name);
         res.set_content(R"({"success":true})", "application/json");
     });
 
     // Manually trigger a defined agent
-    svr.Post(R"(/api/agent-defs/([^/]+)/run)", [this](const httplib::Request& req, httplib::Response& res) {
+    svr.Post(R"(/api/agent-defs/([^/]+)/run)", [this, agent_def_row_to_json](const httplib::Request& req, httplib::Response& res) {
         std::string name = req.matches[1];
-        std::string key = "agent-def:" + name;
-        auto val = ctx_.persistent_store
-            ? ctx_.persistent_store->fetch(key)
-            : ctx_.state_store.fetch(key, 0);
-        if (!val.has_value()) {
-            res.status = 404;
-            res.set_content(R"({"error":"agent definition not found"})", "application/json");
-            return;
-        }
-        auto def = val.value();
-        auto action = def.value("action", json::object());
-        std::string goal = action.value("goal", "");
+
+        std::string goal, model;
         double budget = 0.5;
-        auto budget_obj = def.value("budget", json::object());
-        budget = budget_obj.value("per_run", 0.5);
-        int max_steps = action.value("max_steps", 10);
-        auto tools = action.value("tools", std::vector<std::string>{});
+        int max_steps = 10;
+        std::vector<std::string> tools;
+        std::string ws_id;
+
+        if (ctx_.agent_def_db) {
+            auto row = ctx_.agent_def_db->get(name);
+            if (!row) {
+                res.status = 404;
+                res.set_content(R"({"error":"agent definition not found"})", "application/json");
+                return;
+            }
+            goal       = row->goal;
+            model      = row->model;
+            budget     = row->budget_per_run;
+            max_steps  = row->max_steps;
+            ws_id      = row->workspace_id;
+            if (row->tools.is_array()) {
+                for (const auto& t : row->tools) if (t.is_string()) tools.push_back(t.get<std::string>());
+            }
+        } else {
+            auto val = ctx_.persistent_store
+                ? ctx_.persistent_store->fetch("agent-def:" + name)
+                : ctx_.state_store.fetch("agent-def:" + name, 0);
+            if (!val.has_value()) {
+                res.status = 404;
+                res.set_content(R"({"error":"agent definition not found"})", "application/json");
+                return;
+            }
+            auto def    = val.value();
+            auto action = def.value("action", json::object());
+            goal        = action.value("goal", "");
+            model       = action.value("model", "");
+            budget      = def.value("budget", json::object()).value("per_run", 0.5);
+            max_steps   = action.value("max_steps", 10);
+            tools       = action.value("tools", std::vector<std::string>{});
+        }
 
         if (goal.empty()) {
             res.status = 400;
@@ -479,28 +570,68 @@ void ApiServer::setup_routes() {
         }
 
         RunConfig cfg;
-        cfg.goal = goal;
-        cfg.budget_usd = budget;
-        cfg.max_steps = max_steps;
+        cfg.goal          = goal;
+        cfg.budget_usd    = budget;
+        cfg.max_steps     = max_steps;
         cfg.allowed_tools = tools;
-        cfg.agent_name = name;
-        cfg.model = action.value("model", ctx_.config.llm_model);
+        cfg.agent_name    = name;
+        cfg.model         = model.empty() ? ctx_.config.llm_model : model;
+        cfg.workspace_id  = ws_id;
 
-        RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+        RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                          ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                          ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
                          ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
 
         auto result = engine.execute(cfg);
-        json j;
-        j["success"] = result.success;
-        j["content"] = result.content;
-        j["total_cost_usd"] = result.total_cost_usd;
-        j["total_tokens"] = result.total_tokens;
-        j["steps"] = result.steps;
-        j["chain_id"] = result.chain_id;
-        j["agent_name"] = name;
-        res.set_content(j.dump(), "application/json");
+
+        // Persist run to DB + sync to Supabase
+        if (ctx_.agent_run_db) {
+            AgentRunRow run_row;
+            run_row.agent_name   = name;
+            run_row.workspace_id = ws_id;
+            run_row.goal         = goal;
+            run_row.status       = result.success ? "completed" : "failed";
+            run_row.result       = result.content;
+            run_row.steps        = result.steps;
+            run_row.cost_usd     = result.total_cost_usd;
+            run_row.model        = cfg.model;
+            ctx_.agent_run_db->insert(run_row);
+            if (ctx_.supabase) ctx_.supabase->upsert("agent_runs", {
+                {"id", run_row.id}, {"agent_name", run_row.agent_name},
+                {"workspace_id", run_row.workspace_id}, {"goal", run_row.goal},
+                {"status", run_row.status}, {"result", run_row.result},
+                {"steps", run_row.steps}, {"cost_usd", run_row.cost_usd},
+                {"model", run_row.model}
+            });
+        }
+
+        // Persist output to workspace outputs if scoped
+        if (ctx_.ws_output_db && !ws_id.empty()) {
+            WorkspaceOutputRow out;
+            out.workspace_id = ws_id;
+            out.agent_name   = name;
+            out.type         = "text";
+            out.title        = "Run result";
+            out.content      = result.content;
+            out.cost_usd     = result.total_cost_usd;
+            ctx_.ws_output_db->insert(out);
+            if (ctx_.supabase) ctx_.supabase->upsert("workspace_outputs", {
+                {"id", out.id}, {"workspace_id", out.workspace_id},
+                {"agent_name", out.agent_name}, {"type", out.type},
+                {"title", out.title}, {"content", out.content}, {"cost_usd", out.cost_usd}
+            });
+        }
+
+        // Update agent def budget spent
+        if (ctx_.agent_def_db) ctx_.agent_def_db->update_budget_spent(name, result.total_cost_usd);
+
+        res.set_content(json({
+            {"success", result.success}, {"content", result.content},
+            {"total_cost_usd", result.total_cost_usd}, {"total_tokens", result.total_tokens},
+            {"steps", result.steps}, {"chain_id", result.chain_id},
+            {"agent_name", name}
+        }).dump(), "application/json");
     });
 
     // -----------------------------------------------------------------------
@@ -863,22 +994,37 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
-    // Worlds — list
+    // Worlds — list  (DB-backed, falls back to WorldEngine in-memory)
     // -----------------------------------------------------------------------
     svr.Get("/api/worlds", [this](const httplib::Request&, httplib::Response& res) {
-        if (!ctx_.world_engine) {
-            res.set_content(R"({"enabled":false,"worlds":[]})", "application/json");
-            return;
-        }
-        auto worlds = ctx_.world_engine->list();
         json j = json::array();
-        for (const auto& w : worlds) {
-            json wj;
-            wj["id"] = w.id;
-            wj["name"] = w.name;
-            wj["member_count"] = w.member_count;
-            wj["metadata"] = w.metadata;
-            j.push_back(wj);
+        // Prefer DB if available
+        if (ctx_.workspace_db) {
+            auto rows = ctx_.workspace_db->list("active");
+            for (const auto& w : rows) {
+                json wj;
+                wj["id"]           = w.id;
+                wj["name"]         = w.name;
+                wj["status"]       = w.status;
+                wj["metadata"]     = w.metadata;
+                wj["member_count"] = 0;
+                // Augment with live member count from WorldEngine
+                if (ctx_.world_engine) {
+                    for (const auto& live : ctx_.world_engine->list()) {
+                        if (live.name == w.name) { wj["member_count"] = live.member_count; break; }
+                    }
+                }
+                j.push_back(wj);
+            }
+        } else if (ctx_.world_engine) {
+            for (const auto& w : ctx_.world_engine->list()) {
+                json wj;
+                wj["id"]           = w.id;
+                wj["name"]         = w.name;
+                wj["member_count"] = w.member_count;
+                wj["metadata"]     = w.metadata;
+                j.push_back(wj);
+            }
         }
         res.set_content(j.dump(), "application/json");
     });
@@ -887,11 +1033,6 @@ void ApiServer::setup_routes() {
     // Worlds — create
     // -----------------------------------------------------------------------
     svr.Post("/api/worlds", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!ctx_.world_engine) {
-            res.status = 503;
-            res.set_content(R"({"error":"world engine not enabled"})", "application/json");
-            return;
-        }
         try {
             auto body = json::parse(req.body);
             std::string name = body.value("name", "");
@@ -901,31 +1042,74 @@ void ApiServer::setup_routes() {
                 return;
             }
             auto metadata = body.value("metadata", json::object());
-            uint32_t id = ctx_.world_engine->create(name, metadata);
+
+            // Persist to DB
+            std::string ws_id;
+            if (ctx_.workspace_db) {
+                WorkspaceRow row;
+                row.name     = name;
+                row.status   = "active";
+                row.metadata = metadata;
+                // Generate ID (uuid-lite: hex timestamp + random suffix)
+                auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                row.id = std::to_string(now_ms);
+                ctx_.workspace_db->upsert(row);
+                ws_id = row.id;
+                if (ctx_.supabase) ctx_.supabase->upsert("workspaces", {
+                    {"id", row.id}, {"name", row.name},
+                    {"status", row.status}, {"metadata", row.metadata}
+                });
+            }
+
+            // Also create in live WorldEngine
+            uint32_t live_id = 0;
+            if (ctx_.world_engine) live_id = ctx_.world_engine->create(name, metadata);
+
             json j;
-            j["id"] = id;
-            j["name"] = name;
+            if (ws_id.empty()) j["id"] = live_id; else j["id"] = ws_id;
+            j["name"]   = name;
+            j["status"] = "active";
             res.status = 201;
             res.set_content(j.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
-            json j;
-            j["error"] = std::string("invalid JSON: ") + e.what();
-            res.set_content(j.dump(), "application/json");
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
         }
     });
 
     // -----------------------------------------------------------------------
     // Worlds — destroy
     // -----------------------------------------------------------------------
-    svr.Delete(R"(/api/worlds/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        uint32_t id = static_cast<uint32_t>(std::stoul(req.matches[1]));
-        if (!ctx_.world_engine) {
-            res.status = 503;
-            res.set_content(R"({"error":"world engine not enabled"})", "application/json");
-            return;
+    svr.Delete(R"(/api/worlds/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string id_str = req.matches[1];
+        bool ok = false;
+
+        // Remove from DB
+        if (ctx_.workspace_db) {
+            auto row = ctx_.workspace_db->get(id_str);
+            if (row) {
+                ok = ctx_.workspace_db->remove(id_str);
+                // Clean up sub-tables (cascades handle workspace_data/outputs, but clean swarms too)
+                if (ctx_.swarm_db) {
+                    for (auto& s : ctx_.swarm_db->list(id_str)) {
+                        ctx_.swarm_db->remove(s.name);
+                        if (ctx_.supabase) ctx_.supabase->remove("swarms", "name", s.name);
+                    }
+                }
+                if (ctx_.supabase) ctx_.supabase->remove("workspaces", "id", id_str);
+            }
         }
-        if (ctx_.world_engine->destroy(id)) {
+
+        // Also destroy live world (numeric id or by-name lookup)
+        if (ctx_.world_engine) {
+            try {
+                uint32_t live_id = static_cast<uint32_t>(std::stoul(id_str));
+                ok = ctx_.world_engine->destroy(live_id) || ok;
+            } catch (...) {}
+        }
+
+        if (ok) {
             res.set_content(R"({"success":true})", "application/json");
         } else {
             res.status = 404;
@@ -936,20 +1120,29 @@ void ApiServer::setup_routes() {
     // -----------------------------------------------------------------------
     // Worlds — list agent defs assigned to a world
     // -----------------------------------------------------------------------
-    svr.Get(R"(/api/worlds/(\d+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
-        std::string key = "world-agents:" + std::string(req.matches[1]);
+    svr.Get(R"(/api/worlds/([^/]+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
         json agents = json::array();
-        auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(key)
-                                            : ctx_.state_store.fetch(key, 0);
-        if (stored.has_value() && stored.value().is_array()) agents = stored.value();
+
+        // DB-backed: agents whose workspace_id matches
+        if (ctx_.agent_def_db) {
+            auto defs = ctx_.agent_def_db->list(ws_id);
+            for (const auto& d : defs) agents.push_back(d.name);
+        } else {
+            // Legacy fallback
+            std::string key = "world-agents:" + ws_id;
+            auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(key)
+                                                : ctx_.state_store.fetch(key, 0);
+            if (stored.has_value() && stored.value().is_array()) agents = stored.value();
+        }
         res.set_content(agents.dump(), "application/json");
     });
 
     // -----------------------------------------------------------------------
     // Worlds — assign agent def to a world
     // -----------------------------------------------------------------------
-    svr.Post(R"(/api/worlds/(\d+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
-        uint32_t world_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+    svr.Post(R"(/api/worlds/([^/]+)/agents)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
         try {
             auto body = json::parse(req.body);
             std::string agent_name = body.value("agent", "");
@@ -958,34 +1151,46 @@ void ApiServer::setup_routes() {
                 res.set_content(R"({"error":"agent name required"})", "application/json");
                 return;
             }
-            // Verify agent def exists
-            std::string def_key = "agent-def:" + agent_name;
-            auto def = ctx_.persistent_store ? ctx_.persistent_store->fetch(def_key)
-                                             : ctx_.state_store.fetch(def_key, 0);
-            if (!def.has_value()) {
-                res.status = 404;
-                res.set_content(R"({"error":"agent definition not found"})", "application/json");
-                return;
+
+            if (ctx_.agent_def_db) {
+                auto def = ctx_.agent_def_db->get(agent_name);
+                if (!def) {
+                    res.status = 404;
+                    res.set_content(R"({"error":"agent definition not found"})", "application/json");
+                    return;
+                }
+                // Update the agent def's workspace_id
+                AgentDefRow updated = *def;
+                updated.workspace_id = ws_id;
+                ctx_.agent_def_db->upsert(updated);
+                // Return all agents in this workspace
+                auto defs = ctx_.agent_def_db->list(ws_id);
+                json agents = json::array();
+                for (const auto& d : defs) agents.push_back(d.name);
+                res.set_content(agents.dump(), "application/json");
+            } else {
+                // Legacy fallback
+                std::string def_key = "agent-def:" + agent_name;
+                auto def = ctx_.persistent_store ? ctx_.persistent_store->fetch(def_key)
+                                                 : ctx_.state_store.fetch(def_key, 0);
+                if (!def.has_value()) {
+                    res.status = 404;
+                    res.set_content(R"({"error":"agent definition not found"})", "application/json");
+                    return;
+                }
+                std::string wkey = "world-agents:" + ws_id;
+                auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
+                                                    : ctx_.state_store.fetch(wkey, 0);
+                json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
+                bool already = false;
+                for (const auto& a : agents) if (a.get<std::string>() == agent_name) { already = true; break; }
+                if (!already) {
+                    agents.push_back(agent_name);
+                    if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, agents, 0, "global");
+                    else ctx_.state_store.store(wkey, agents, 0);
+                }
+                res.set_content(agents.dump(), "application/json");
             }
-            // Load current list and append if not already there
-            std::string wkey = "world-agents:" + std::to_string(world_id);
-            auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
-                                                : ctx_.state_store.fetch(wkey, 0);
-            json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
-            bool already = false;
-            for (const auto& a : agents) if (a.get<std::string>() == agent_name) { already = true; break; }
-            if (!already) {
-                agents.push_back(agent_name);
-                if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, agents, 0, "global");
-                else ctx_.state_store.store(wkey, agents, 0);
-                // Also update agent def's world field
-                auto updated_def = def.value();
-                if (!updated_def.contains("action")) updated_def["action"] = json::object();
-                updated_def["action"]["world"] = std::to_string(world_id);
-                if (ctx_.persistent_store) ctx_.persistent_store->store(def_key, updated_def, 0, "global");
-                else ctx_.state_store.store(def_key, updated_def, 0);
-            }
-            res.set_content(agents.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", e.what()}}).dump(), "application/json");
@@ -995,33 +1200,171 @@ void ApiServer::setup_routes() {
     // -----------------------------------------------------------------------
     // Worlds — remove agent def from a world
     // -----------------------------------------------------------------------
-    svr.Delete(R"(/api/worlds/(\d+)/agents/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
-        uint32_t world_id = static_cast<uint32_t>(std::stoul(req.matches[1]));
+    svr.Delete(R"(/api/worlds/([^/]+)/agents/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id      = req.matches[1];
         std::string agent_name = req.matches[2];
-        std::string wkey = "world-agents:" + std::to_string(world_id);
-        auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
-                                            : ctx_.state_store.fetch(wkey, 0);
-        json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
-        json filtered = json::array();
-        for (const auto& a : agents) if (a.get<std::string>() != agent_name) filtered.push_back(a);
-        if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, filtered, 0, "global");
-        else ctx_.state_store.store(wkey, filtered, 0);
-        res.set_content(filtered.dump(), "application/json");
+
+        if (ctx_.agent_def_db) {
+            auto def = ctx_.agent_def_db->get(agent_name);
+            if (def && def->workspace_id == ws_id) {
+                AgentDefRow updated = *def;
+                updated.workspace_id = "";
+                ctx_.agent_def_db->upsert(updated);
+            }
+            auto defs = ctx_.agent_def_db->list(ws_id);
+            json agents = json::array();
+            for (const auto& d : defs) agents.push_back(d.name);
+            res.set_content(agents.dump(), "application/json");
+        } else {
+            // Legacy fallback
+            std::string wkey = "world-agents:" + ws_id;
+            auto stored = ctx_.persistent_store ? ctx_.persistent_store->fetch(wkey)
+                                                : ctx_.state_store.fetch(wkey, 0);
+            json agents = (stored.has_value() && stored.value().is_array()) ? stored.value() : json::array();
+            json filtered = json::array();
+            for (const auto& a : agents) if (a.get<std::string>() != agent_name) filtered.push_back(a);
+            if (ctx_.persistent_store) ctx_.persistent_store->store(wkey, filtered, 0, "global");
+            else ctx_.state_store.store(wkey, filtered, 0);
+            res.set_content(filtered.dump(), "application/json");
+        }
     });
 
     // -----------------------------------------------------------------------
-    // Swarms — CRUD (a swarm is a named group of agent defs in a world)
+    // Workspace data — GET/PUT/DELETE key-value store per workspace
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/workspaces/([^/]+)/data)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
+        json j = json::array();
+        if (ctx_.ws_data_db) {
+            for (const auto& row : ctx_.ws_data_db->list(ws_id)) {
+                j.push_back({{"key", row.key}, {"content_type", row.content_type},
+                              {"content", row.content}, {"file_path", row.file_path},
+                              {"created_at", row.created_at}});
+            }
+        }
+        res.set_content(j.dump(), "application/json");
+    });
+
+    svr.Put(R"(/api/workspaces/([^/]+)/data)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
+        if (!ctx_.ws_data_db) {
+            res.status = 503;
+            res.set_content(R"({"error":"workspace data DB not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            WorkspaceDataRow row;
+            row.workspace_id  = ws_id;
+            row.key           = body.value("key", "");
+            row.content_type  = body.value("content_type", "text/plain");
+            row.content       = body.value("content", "");
+            row.file_path     = body.value("file_path", "");
+            if (row.key.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"key required"})", "application/json");
+                return;
+            }
+            ctx_.ws_data_db->upsert(row);
+            res.set_content(R"({"success":true})", "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Delete(R"(/api/workspaces/([^/]+)/data/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
+        std::string key   = req.matches[2];
+        if (ctx_.ws_data_db) ctx_.ws_data_db->remove(ws_id, key);
+        res.set_content(R"({"success":true})", "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Workspace outputs — list outputs produced by agents in this workspace
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/workspaces/([^/]+)/outputs)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
+        int limit = 50;
+        if (req.has_param("limit")) {
+            try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        }
+        json j = json::array();
+        if (ctx_.ws_output_db) {
+            for (const auto& row : ctx_.ws_output_db->list(ws_id, limit)) {
+                j.push_back({{"id", row.id}, {"agent_name", row.agent_name},
+                              {"run_id", row.run_id}, {"type", row.type},
+                              {"title", row.title}, {"content", row.content},
+                              {"cost_usd", row.cost_usd}, {"created_at", row.created_at}});
+            }
+        }
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Agent runs — list runs for a workspace or globally
+    // -----------------------------------------------------------------------
+    svr.Get(R"(/api/workspaces/([^/]+)/runs)", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string ws_id = req.matches[1];
+        int limit = 50;
+        if (req.has_param("limit")) {
+            try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        }
+        json j = json::array();
+        if (ctx_.agent_run_db) {
+            for (const auto& row : ctx_.agent_run_db->list(ws_id, limit)) {
+                j.push_back({{"id", row.id}, {"agent_name", row.agent_name},
+                              {"goal", row.goal}, {"status", row.status},
+                              {"steps", row.steps}, {"cost_usd", row.cost_usd},
+                              {"model", row.model}, {"started_at", row.started_at},
+                              {"completed_at", row.completed_at}});
+            }
+        }
+        res.set_content(j.dump(), "application/json");
+    });
+
+    svr.Get("/api/runs", [this](const httplib::Request& req, httplib::Response& res) {
+        int limit = 50;
+        if (req.has_param("limit")) {
+            try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {}
+        }
+        json j = json::array();
+        if (ctx_.agent_run_db) {
+            for (const auto& row : ctx_.agent_run_db->list("", limit)) {
+                j.push_back({{"id", row.id}, {"agent_name", row.agent_name},
+                              {"workspace_id", row.workspace_id},
+                              {"goal", row.goal}, {"status", row.status},
+                              {"steps", row.steps}, {"cost_usd", row.cost_usd},
+                              {"model", row.model}, {"started_at", row.started_at},
+                              {"completed_at", row.completed_at}});
+            }
+        }
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Swarms — CRUD  (DB-backed)
     // -----------------------------------------------------------------------
     svr.Get("/api/swarms", [this](const httplib::Request&, httplib::Response& res) {
-        json swarms = json::array();
-        auto keys = ctx_.persistent_store ? ctx_.persistent_store->keys("swarm:")
-                                          : ctx_.state_store.keys("swarm:", 0);
-        for (const auto& k : keys) {
-            auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch(k)
-                                           : ctx_.state_store.fetch(k, 0);
-            if (v.has_value()) swarms.push_back(v.value());
+        json j = json::array();
+        if (ctx_.swarm_db) {
+            for (const auto& row : ctx_.swarm_db->list()) {
+                j.push_back({{"name", row.name}, {"workspace_id", row.workspace_id},
+                              {"agents", row.agents}, {"goal", row.goal},
+                              {"budget", row.budget}, {"status", row.status},
+                              {"created_at", row.created_at}});
+            }
+        } else {
+            // Legacy fallback
+            auto keys = ctx_.persistent_store ? ctx_.persistent_store->keys("swarm:")
+                                              : ctx_.state_store.keys("swarm:", 0);
+            for (const auto& k : keys) {
+                auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch(k)
+                                               : ctx_.state_store.fetch(k, 0);
+                if (v.has_value()) j.push_back(v.value());
+            }
         }
-        res.set_content(swarms.dump(), "application/json");
+        res.set_content(j.dump(), "application/json");
     });
 
     svr.Post("/api/swarms", [this](const httplib::Request& req, httplib::Response& res) {
@@ -1033,12 +1376,29 @@ void ApiServer::setup_routes() {
                 res.set_content(R"({"error":"name required"})", "application/json");
                 return;
             }
-            body["created_at"] = body.value("created_at", "");
-            std::string key = "swarm:" + name;
-            if (ctx_.persistent_store) ctx_.persistent_store->store(key, body, 0, "global");
-            else ctx_.state_store.store(key, body, 0);
-            res.status = 201;
-            res.set_content(body.dump(), "application/json");
+            if (ctx_.swarm_db) {
+                SwarmRow row;
+                row.name         = name;
+                row.workspace_id = body.value("world_id", body.value("world", ""));
+                row.agents       = body.value("agents", json::array());
+                row.goal         = body.value("goal", "");
+                row.budget       = body.value("budget", 2.0);
+                row.status       = "idle";
+                ctx_.swarm_db->upsert(row);
+                json resp = {{"name", row.name}, {"workspace_id", row.workspace_id},
+                             {"agents", row.agents}, {"goal", row.goal},
+                             {"budget", row.budget}, {"status", row.status}};
+                if (ctx_.supabase) ctx_.supabase->upsert("swarms", resp);
+                res.status = 201;
+                res.set_content(resp.dump(), "application/json");
+            } else {
+                // Legacy fallback
+                std::string key = "swarm:" + name;
+                if (ctx_.persistent_store) ctx_.persistent_store->store(key, body, 0, "global");
+                else ctx_.state_store.store(key, body, 0);
+                res.status = 201;
+                res.set_content(body.dump(), "application/json");
+            }
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json({{"error", e.what()}}).dump(), "application/json");
@@ -1046,43 +1406,59 @@ void ApiServer::setup_routes() {
     });
 
     svr.Delete(R"(/api/swarms/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
-        std::string key = "swarm:" + std::string(req.matches[1]);
-        if (ctx_.persistent_store) ctx_.persistent_store->erase(key);
-        else ctx_.state_store.erase(key, 0);
+        std::string name = req.matches[1];
+        if (ctx_.swarm_db) ctx_.swarm_db->remove(name);
+        else {
+            if (ctx_.persistent_store) ctx_.persistent_store->erase("swarm:" + name);
+            else ctx_.state_store.erase("swarm:" + name, 0);
+        }
+        if (ctx_.supabase) ctx_.supabase->remove("swarms", "name", name);
         res.set_content(R"({"success":true})", "application/json");
     });
 
     svr.Post(R"(/api/swarms/([^/]+)/start)", [this](const httplib::Request& req, httplib::Response& res) {
         std::string swarm_name = req.matches[1];
-        std::string key = "swarm:" + swarm_name;
-        auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch(key)
-                                       : ctx_.state_store.fetch(key, 0);
-        if (!v.has_value()) {
-            res.status = 404;
-            res.set_content(R"({"error":"swarm not found"})", "application/json");
-            return;
+
+        json swarm;
+        if (ctx_.swarm_db) {
+            auto row = ctx_.swarm_db->get(swarm_name);
+            if (!row) {
+                res.status = 404;
+                res.set_content(R"({"error":"swarm not found"})", "application/json");
+                return;
+            }
+            swarm["name"]         = row->name;
+            swarm["workspace_id"] = row->workspace_id;
+            swarm["agents"]       = row->agents;
+            swarm["goal"]         = row->goal;
+            swarm["budget"]       = row->budget;
+            ctx_.swarm_db->set_status(swarm_name, "running");
+        } else {
+            auto v = ctx_.persistent_store ? ctx_.persistent_store->fetch("swarm:" + swarm_name)
+                                           : ctx_.state_store.fetch("swarm:" + swarm_name, 0);
+            if (!v.has_value()) {
+                res.status = 404;
+                res.set_content(R"({"error":"swarm not found"})", "application/json");
+                return;
+            }
+            swarm = v.value();
         }
-        auto swarm = v.value();
-        // Build a fleet request from the swarm definition
+
         json fleet;
-        fleet["goal"] = swarm.value("goal", "Execute swarm: " + swarm_name);
-        fleet["world"] = swarm.value("world", swarm_name);
+        fleet["goal"]   = swarm.value("goal", "Execute swarm: " + swarm_name);
+        fleet["world"]  = swarm.value("workspace_id", swarm.value("world", swarm_name));
         fleet["budget"] = swarm.value("budget", 2.0);
         fleet["agents"] = swarm.value("agents", json::array()).size();
         json agent_configs = json::array();
         for (const auto& a : swarm.value("agents", json::array())) {
-            json ac;
-            ac["name"] = a;
-            ac["role"] = "agent";
-            agent_configs.push_back(ac);
+            agent_configs.push_back({{"name", a}, {"role", "agent"}});
         }
         fleet["agent_configs"] = agent_configs;
-        // Forward to the fleet endpoint internally — just return the fleet config for now
-        // and let the client call /api/fleet directly with this payload
+
         json result;
-        result["swarm"] = swarm_name;
+        result["swarm"]        = swarm_name;
         result["fleet_request"] = fleet;
-        result["message"] = "POST this fleet_request to /api/fleet to launch";
+        result["message"]      = "POST this fleet_request to /api/fleet to launch";
         res.set_content(result.dump(), "application/json");
     });
 
@@ -1775,8 +2151,9 @@ void ApiServer::setup_routes() {
             cfg.model = body.value("model", ctx_.config.llm_model);
             cfg.budget_usd = body.value("budget", 1.0);
             cfg.max_steps = body.value("max_steps", 20);
-            cfg.allowed_tools = body.value("tools", std::vector<std::string>{});
-            cfg.agent_name = body.value("agent_name", "agent");
+            cfg.allowed_tools  = body.value("tools", std::vector<std::string>{});
+            cfg.agent_name     = body.value("agent_name", "agent");
+            cfg.workspace_id   = body.value("workspace_id", "");
 
             if (cfg.goal.empty()) {
                 res.status = 400;
@@ -1784,7 +2161,21 @@ void ApiServer::setup_routes() {
                 return;
             }
 
-            RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+            // Record run start
+            std::string run_id;
+            if (ctx_.agent_run_db) {
+                AgentRunRow run_row;
+                run_row.agent_name   = cfg.agent_name;
+                run_row.workspace_id = cfg.workspace_id;
+                run_row.goal         = cfg.goal;
+                run_row.status       = "running";
+                run_row.model        = cfg.model.empty() ? ctx_.config.llm_model : cfg.model;
+                ctx_.agent_run_db->insert(run_row);
+                run_id = run_row.id;
+                cfg.run_id = run_id;
+            }
+
+            RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                              ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                              ctx_.artifact_store, ctx_.chain_store,
                              ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler,
@@ -1792,16 +2183,47 @@ void ApiServer::setup_routes() {
 
             auto result = engine.execute(cfg);
 
+            // Record run completion + sync to Supabase
+            if (ctx_.agent_run_db && !run_id.empty()) {
+                std::string final_status = result.success ? "completed" : "failed";
+                ctx_.agent_run_db->complete(run_id, final_status,
+                    result.content, result.steps, result.total_cost_usd);
+                if (ctx_.supabase) ctx_.supabase->patch("agent_runs", "id", run_id, {
+                    {"status", final_status}, {"result", result.content},
+                    {"steps", result.steps}, {"cost_usd", result.total_cost_usd}
+                });
+            }
+
+            // Write output to workspace if scoped
+            if (ctx_.ws_output_db && !cfg.workspace_id.empty()) {
+                WorkspaceOutputRow out;
+                out.workspace_id = cfg.workspace_id;
+                out.agent_name   = cfg.agent_name;
+                out.run_id       = run_id;
+                out.type         = "text";
+                out.title        = cfg.goal.substr(0, 80);
+                out.content      = result.content;
+                out.cost_usd     = result.total_cost_usd;
+                ctx_.ws_output_db->insert(out);
+                if (ctx_.supabase) ctx_.supabase->upsert("workspace_outputs", {
+                    {"id", out.id}, {"workspace_id", out.workspace_id},
+                    {"agent_name", out.agent_name}, {"run_id", out.run_id},
+                    {"type", out.type}, {"title", out.title},
+                    {"content", out.content}, {"cost_usd", out.cost_usd}
+                });
+            }
+
             json j;
-            j["success"] = result.success;
-            j["content"] = result.content;
-            j["steps"] = result.steps;
-            j["total_tokens"] = result.total_tokens;
+            j["success"]       = result.success;
+            j["content"]       = result.content;
+            j["steps"]         = result.steps;
+            j["total_tokens"]  = result.total_tokens;
             j["total_cost_usd"] = result.total_cost_usd;
-            j["budget_usd"] = cfg.budget_usd;
-            j["model"] = cfg.model.empty() ? ctx_.config.llm_model : cfg.model;
-            j["chain_id"] = result.chain_id;
-            j["step_log"] = result.step_log;
+            j["budget_usd"]    = cfg.budget_usd;
+            j["model"]         = cfg.model.empty() ? ctx_.config.llm_model : cfg.model;
+            j["chain_id"]      = result.chain_id;
+            j["step_log"]      = result.step_log;
+            j["run_id"]        = run_id;
             if (!result.error.empty()) j["error"] = result.error;
             res.set_content(j.dump(), "application/json");
 
@@ -1811,6 +2233,210 @@ void ApiServer::setup_routes() {
             j["error"] = std::string("invalid request: ") + e.what();
             res.set_content(j.dump(), "application/json");
         }
+    });
+
+    // -----------------------------------------------------------------------
+    // Job Pipeline — async execution with step checkpointing
+    // POST   /api/jobs                — submit, returns job_id immediately (202)
+    // GET    /api/jobs                — list jobs (?status=&workspace_id=&limit=)
+    // GET    /api/jobs/:id            — get job detail + steps_log
+    // DELETE /api/jobs/:id            — cancel queued job
+    // POST   /api/jobs/:id/retry      — re-queue failed job
+    // GET    /api/jobs/:id/stream     — SSE live step events
+    // -----------------------------------------------------------------------
+
+    svr.Post("/api/jobs", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.status = 503;
+            res.set_content(R"({"error":"job queue not available"})", "application/json");
+            return;
+        }
+        try {
+            auto body = json::parse(req.body);
+            std::string goal = body.value("goal", "");
+            if (goal.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"goal is required"})", "application/json");
+                return;
+            }
+            Job job;
+            job.goal         = goal;
+            job.agent_name   = body.value("agent_name", "agent");
+            job.model        = body.value("model", ctx_.config.llm_model);
+            job.budget_usd   = body.value("budget", 1.0);
+            job.max_steps    = body.value("max_steps", 20);
+            job.priority     = body.value("priority", 0);
+            job.workspace_id = body.value("workspace_id", "");
+            job.depends_on   = body.value("depends_on", "");
+            if (body.contains("tools") && body["tools"].is_array())
+                job.allowed_tools = body["tools"].get<std::vector<std::string>>();
+            if (body.contains("allowed_tools") && body["allowed_tools"].is_array())
+                job.allowed_tools = body["allowed_tools"].get<std::vector<std::string>>();
+
+            // If referencing an agent def, load defaults from it
+            if (ctx_.agent_def_db && !job.agent_name.empty() && job.agent_name != "agent") {
+                auto def = ctx_.agent_def_db->get(job.agent_name);
+                if (def) {
+                    if (job.goal.empty()) job.goal = def->goal;
+                    if (job.model.empty()) job.model = def->model;
+                    if (job.budget_usd == 1.0) job.budget_usd = def->budget_per_run;
+                    if (job.max_steps == 20) job.max_steps = def->max_steps;
+                    if (job.workspace_id.empty()) job.workspace_id = def->workspace_id;
+                    if (job.allowed_tools.empty() && def->tools.is_array()) {
+                        for (const auto& t : def->tools)
+                            if (t.is_string()) job.allowed_tools.push_back(t.get<std::string>());
+                    }
+                }
+            }
+
+            std::string job_id = ctx_.job_queue->submit(std::move(job));
+            res.status = 202;
+            res.set_content(json({{"id", job_id}, {"status", "queued"}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json({{"error", e.what()}}).dump(), "application/json");
+        }
+    });
+
+    svr.Get("/api/jobs", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.set_content(R"({"jobs":[],"count":0})", "application/json");
+            return;
+        }
+        std::string status_filter = req.has_param("status") ? req.get_param_value("status") : "";
+        std::string ws_filter     = req.has_param("workspace_id") ? req.get_param_value("workspace_id") : "";
+        int limit = 50;
+        if (req.has_param("limit")) { try { limit = std::stoi(req.get_param_value("limit")); } catch (...) {} }
+
+        auto jobs = ctx_.job_queue->list(status_filter, ws_filter, limit);
+        json arr = json::array();
+        for (const auto& j : jobs) {
+            arr.push_back({
+                {"id", j.id}, {"agent_name", j.agent_name}, {"workspace_id", j.workspace_id},
+                {"goal", j.goal}, {"status", j.status}, {"model", j.model},
+                {"steps", j.steps_done}, {"cost_usd", j.cost_usd},
+                {"priority", j.priority}, {"error", j.error}
+            });
+        }
+        res.set_content(json({{"jobs", arr}, {"count", arr.size()},
+                               {"queued", ctx_.job_queue->queued_count()},
+                               {"running", ctx_.job_queue->running_count()}}).dump(),
+                        "application/json");
+    });
+
+    svr.Get(R"(/api/jobs/([^/]+)$)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.status = 503; res.set_content(R"({"error":"job queue not available"})", "application/json"); return;
+        }
+        std::string id = req.matches[1];
+        auto job = ctx_.job_queue->get(id);
+        if (!job) {
+            res.status = 404; res.set_content(R"({"error":"job not found"})", "application/json"); return;
+        }
+        res.set_content(json({
+            {"id", job->id}, {"agent_name", job->agent_name}, {"workspace_id", job->workspace_id},
+            {"goal", job->goal}, {"status", job->status}, {"model", job->model},
+            {"steps", job->steps_done}, {"cost_usd", job->cost_usd}, {"priority", job->priority},
+            {"result", job->result}, {"error", job->error}, {"steps_log", job->steps_log}
+        }).dump(), "application/json");
+    });
+
+    svr.Delete(R"(/api/jobs/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.status = 503; res.set_content(R"({"error":"job queue not available"})", "application/json"); return;
+        }
+        std::string id = req.matches[1];
+        bool ok = ctx_.job_queue->cancel(id);
+        if (ok) res.set_content(R"({"success":true,"status":"cancelled"})", "application/json");
+        else { res.status = 409; res.set_content("{\"error\":\"job is not cancellable (not queued)\"}", "application/json"); }
+    });
+
+    svr.Post(R"(/api/jobs/([^/]+)/retry)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.status = 503; res.set_content(R"({"error":"job queue not available"})", "application/json"); return;
+        }
+        std::string id = req.matches[1];
+        auto existing = ctx_.job_queue->get(id);
+        if (!existing) { res.status = 404; res.set_content(R"({"error":"job not found"})", "application/json"); return; }
+        if (existing->status != "failed" && existing->status != "cancelled") {
+            res.status = 409; res.set_content(R"({"error":"only failed or cancelled jobs can be retried"})", "application/json"); return;
+        }
+        Job retry = *existing;
+        retry.id         = "";   // new ID
+        retry.status     = "";
+        retry.error      = "";
+        retry.result     = "";
+        retry.steps_done = 0;
+        retry.cost_usd   = 0;
+        retry.steps_log  = json::array();
+        std::string new_id = ctx_.job_queue->submit(std::move(retry));
+        res.status = 202;
+        res.set_content(json({{"id", new_id}, {"status", "queued"}, {"retried_from", id}}).dump(), "application/json");
+    });
+
+    // SSE stream for a specific job's step events
+    svr.Get(R"(/api/jobs/([^/]+)/stream)", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!ctx_.job_queue) {
+            res.status = 503; res.set_content(R"({"error":"job queue not available"})", "application/json"); return;
+        }
+        std::string job_id = req.matches[1];
+        auto job = ctx_.job_queue->get(job_id);
+        if (!job) { res.status = 404; res.set_content(R"({"error":"job not found"})", "application/json"); return; }
+
+        res.set_chunked_content_provider("text/event-stream",
+            [this, job_id, existing_steps = job->steps_log](size_t /*offset*/, httplib::DataSink& sink) mutable -> bool {
+                // First send already-completed steps
+                for (const auto& step : existing_steps) {
+                    std::string data = "data: " + step.dump() + "\n\n";
+                    if (!sink.write(data.c_str(), data.size())) return false;
+                }
+
+                auto cur = ctx_.job_queue->get(job_id);
+                if (!cur || cur->status == "completed" || cur->status == "failed" || cur->status == "cancelled") {
+                    std::string done = "data: " + json({{"type","done"},{"status", cur ? cur->status : "unknown"}}).dump() + "\n\n";
+                    sink.write(done.c_str(), done.size());
+                    return false;
+                }
+
+                // Subscribe to future steps
+                std::mutex ev_mu;
+                std::condition_variable ev_cv;
+                std::queue<RunEvent> ev_queue;
+                bool job_done = false;
+
+                ctx_.job_queue->subscribe(job_id, [&](const std::string&, const RunEvent& ev) {
+                    std::lock_guard lock(ev_mu);
+                    ev_queue.push(ev);
+                    if (ev.type == "done" || ev.type == "error") job_done = true;
+                    ev_cv.notify_one();
+                });
+
+                while (true) {
+                    RunEvent ev;
+                    {
+                        std::unique_lock lock(ev_mu);
+                        ev_cv.wait_for(lock, std::chrono::seconds(30),
+                            [&] { return !ev_queue.empty() || job_done; });
+                        if (ev_queue.empty()) {
+                            // Heartbeat or timeout
+                            std::string hb = ": heartbeat\n\n";
+                            if (!sink.write(hb.c_str(), hb.size())) break;
+                            if (job_done) break;
+                            continue;
+                        }
+                        ev = std::move(ev_queue.front());
+                        ev_queue.pop();
+                    }
+                    json payload = ev.data;
+                    payload["type"] = ev.type;
+                    std::string data = "data: " + payload.dump() + "\n\n";
+                    if (!sink.write(data.c_str(), data.size())) break;
+                    if (ev.type == "done" || ev.type == "error") break;
+                }
+
+                ctx_.job_queue->unsubscribe(job_id);
+                return false;
+            });
     });
 
     // -----------------------------------------------------------------------
@@ -1867,7 +2493,7 @@ void ApiServer::setup_routes() {
             [openrouter, gateway, privacy, audit, state, perms, artifacts, chains, memory, mcp, assembler, config, cfg]
             (size_t /*offset*/, httplib::DataSink& sink) -> bool {
 
-                RunEngine engine(*openrouter, *gateway, *privacy, *audit, *state, *perms,
+                RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit, *state, *perms,
                                  artifacts, chains, memory, mcp, assembler, *config);
 
                 auto result = engine.execute(cfg, [&sink](const RunEvent& ev) {
@@ -2030,7 +2656,7 @@ void ApiServer::setup_routes() {
                         cfg.allowed_tools = agent_tools;
                         cfg.agent_name = agent_name;
 
-                        RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                        RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
                                          *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
 
                         results[i] = engine.execute(cfg, [&, i](const RunEvent& ev) {
@@ -3366,7 +3992,7 @@ void ApiServer::setup_routes() {
                         cfg.allowed_tools = tools;
                         cfg.agent_name = step_name;
 
-                        RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                        RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
                                          *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
 
                         auto result = engine.execute(cfg, [&emit, &step_name, &i](const RunEvent& ev) {
@@ -3528,7 +4154,7 @@ void ApiServer::setup_routes() {
             cfg.allowed_tools = tools;
             cfg.agent_name = agent_name;
 
-            RunEngine engine(*ctx_.openrouter, ctx_.inference_gateway, ctx_.privacy_filter,
+            RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                              ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                              ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
                              ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
@@ -3664,7 +4290,7 @@ void ApiServer::setup_routes() {
                 auto* config = &ctx_.config;
 
                 std::thread([=]() {
-                    RunEngine engine(*openrouter, *gateway, *privacy, *audit,
+                    RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
                                      *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
                     engine.execute(cfg);
                 }).detach();
@@ -3747,7 +4373,7 @@ void ApiServer::setup_routes() {
                         RunConfig cfg;
                         cfg.goal = goal; cfg.model = model; cfg.budget_usd = budget; cfg.max_steps = msteps;
                         cfg.allowed_tools = tools; cfg.agent_name = sname;
-                        RunEngine engine(*openrouter_p, *gateway_p, *privacy_p, *audit_p, *state_p, *perms_p, artifacts_p, chains_p, memory_p, mcp_p, assembler_p, *config_p);
+                        RunEngine engine(*openrouter_p, nullptr, *gateway_p, *privacy_p, *audit_p, *state_p, *perms_p, artifacts_p, chains_p, memory_p, mcp_p, assembler_p, *config_p);
                         auto r = engine.execute(cfg);
                         output = r.content;
                         if (!r.success) break;

@@ -35,6 +35,14 @@ class AgentMailboxRegistry;
 class DaemonManager;
 class AnthropicClient;
 class StateStoreDb;
+class JobQueue;
+class SupabaseSync;
+class WorkspaceDb;
+class AgentDefDb;
+class WorkspaceDataDb;
+class WorkspaceOutputDb;
+class AgentRunDb;
+class SwarmDb;
 
 struct ApiContext {
     KernelConfig& config;
@@ -62,8 +70,17 @@ struct ApiContext {
     SandboxManager* sandbox_manager; // nullable
     AgentMailboxRegistry* mailbox;   // nullable
     DaemonManager* daemon_manager;   // nullable
-    AnthropicClient* anthropic;      // nullable — native Claude API
+    AnthropicClient* anthropic;        // nullable — native Claude API
     StateStoreDb*    persistent_store; // nullable — SQLite-backed agent-defs persistence
+    // New typed DB layers
+    WorkspaceDb*      workspace_db;    // nullable
+    AgentDefDb*       agent_def_db;    // nullable
+    WorkspaceDataDb*  ws_data_db;      // nullable
+    WorkspaceOutputDb* ws_output_db;   // nullable
+    AgentRunDb*       agent_run_db;    // nullable
+    SwarmDb*          swarm_db;        // nullable
+    SupabaseSync*     supabase;        // nullable — cloud sync
+    JobQueue*         job_queue;       // nullable — async pipeline
 };
 
 class ApiServer {

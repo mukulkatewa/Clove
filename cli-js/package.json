@@ -1,6 +1,6 @@
 {
-  "name": "@clove/cli",
-  "version": "0.1.0",
+  "name": "@cloveos/cli",
+  "version": "0.3.0",
   "description": "CLOVE — Run, govern, and scale AI agent fleets from your terminal",
   "type": "module",
   "bin": {

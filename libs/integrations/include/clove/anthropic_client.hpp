@@ -14,6 +14,7 @@ struct AnthropicResponse {
     double cost_usd = 0.0;
     std::string error;
     std::string stop_reason;
+    std::string raw_json;  // OpenAI-compatible format with tool_calls for RunEngine compatibility
 };
 
 /// Native Anthropic API client — calls api.anthropic.com directly.

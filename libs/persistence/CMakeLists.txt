@@ -6,6 +6,8 @@ add_library(clove_persistence STATIC
     src/state_store_db.cpp
     src/artifact_store_db.cpp
     src/memory_block_db.cpp
+    src/workspace_db.cpp
+    src/supabase_sync.cpp
 )
 target_include_directories(clove_persistence PUBLIC include)
 target_link_libraries(clove_persistence PUBLIC
@@ -14,5 +16,6 @@ target_link_libraries(clove_persistence PUBLIC
     clove_governance
     nlohmann_json::nlohmann_json
     SQLite::SQLite3
+    httplib::httplib
 )
 target_compile_features(clove_persistence PUBLIC cxx_std_23)
