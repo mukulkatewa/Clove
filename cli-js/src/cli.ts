@@ -29,7 +29,7 @@ const CONFIG_FILE = join(CLOVE_DIR, 'config.json')
 const USER_AGENTS = join(CLOVE_DIR, 'agents')
 const DEFAULT_PORT = 8080
 const __cli_dir = dirname(fileURLToPath(import.meta.url))
-const TEMPLATES_DIR = join(__cli_dir, '..', '..', 'templates')
+const TEMPLATES_DIR = join(CLOVE_DIR, 'templates')
 
 interface CloveConfig {
   kernelPath: string
@@ -71,9 +71,7 @@ const SEARCH_PATHS = [
   join(CLOVE_DIR, 'bin', 'clove_kernel'),
   '/usr/local/bin/clove_kernel',
   '/opt/homebrew/bin/clove_kernel',
-  // Dev paths
   join(process.cwd(), 'build', 'kernel', 'clove_kernel'),
-  join(homedir(), 'Documents', 'clove-v2', 'build', 'kernel', 'clove_kernel'),
 ]
 
 function findKernel(configPath: string): string | null {
@@ -134,7 +132,7 @@ async function cmdStart(): Promise<void> {
     console.log('Options:')
     console.log('  1. Build from source:')
     console.log(c.dim('     git clone https://github.com/aniiiiXD/Clove.git'))
-    console.log(c.dim('     cd Clove && git checkout v2'))
+    console.log(c.dim('     cd Clove'))
     console.log(c.dim('     mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release'))
     console.log(c.dim('     cmake --build . -j$(sysctl -n hw.ncpu)'))
     console.log('')

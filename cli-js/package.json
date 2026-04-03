@@ -11,7 +11,7 @@
     "dev": "tsc --watch",
     "postinstall": "node scripts/postinstall.js"
   },
-  "files": ["dist", "scripts"],
+  "files": ["dist", "scripts", "templates"],
   "keywords": ["ai", "agents", "fleet", "sandbox", "kernel", "openclaw", "llm"],
   "license": "MIT",
   "engines": {
