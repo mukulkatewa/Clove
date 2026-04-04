@@ -556,14 +556,42 @@ const KNOWN_SERVICES: Record<string, { command: string; args: string[]; tokenEnv
 async function cmdConnect(args: string[]): Promise<void> {
   const sub = args[0]
 
+  // Special case: claude auth login (Max/Pro plan, no API key needed)
+  if (sub === 'claude') {
+    console.log('')
+    console.log(c.cyan('  Connecting Claude Code (Max/Pro plan OAuth)'))
+    console.log(c.dim('  This opens a browser to log in with your Anthropic account.'))
+    console.log(c.dim('  No API key required — works with Max and Pro subscriptions.'))
+    console.log('')
+    try {
+      execSync('which claude', { stdio: 'ignore' })
+    } catch {
+      console.log(c.red('  Claude Code not installed.'))
+      console.log(c.dim('  Install: npm i -g @anthropic-ai/claude-code'))
+      return
+    }
+    const { spawnSync } = await import('node:child_process')
+    const result = spawnSync('claude', ['auth', 'login'], { stdio: 'inherit' })
+    if (result.status === 0) {
+      console.log('')
+      console.log(c.green('  Claude Code authenticated!'))
+      console.log(c.dim('  You can now use claude-code as a runtime in pipelines.'))
+      console.log(c.dim('  Try: clove run --runtime claude-code "fix the bug in src/main.ts"'))
+    } else {
+      console.log(c.red('  Auth failed. Try running: claude auth login'))
+    }
+    return
+  }
+
   if (!sub || sub === 'list' || sub === 'ls') {
     const conns = loadConnections()
     if (!conns.length) {
       console.log(''); console.log(c.dim('  No connections. Connect a service:'))
+      console.log(c.dim('  clove connect claude   ← Max/Pro plan (no API key needed)'))
       console.log(c.dim('  clove connect github'))
       console.log(c.dim('  clove connect slack'))
       console.log('')
-      console.log(c.dim('  Available: ' + Object.keys(KNOWN_SERVICES).join(', ')))
+      console.log(c.dim('  Available: claude, ' + Object.keys(KNOWN_SERVICES).join(', ')))
       console.log('')
       return
     }

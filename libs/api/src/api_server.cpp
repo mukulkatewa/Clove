@@ -1,4 +1,5 @@
 #include <clove/api_server.hpp>
+#include <filesystem>
 
 #include <clove/agent_manager.hpp>
 #include <clove/agent_process.hpp>
@@ -3703,7 +3704,7 @@ void ApiServer::setup_routes() {
         std::string tools_arg;
         for (const auto& t : allowed_tools) { if (!tools_arg.empty()) tools_arg += ","; tools_arg += t; }
 
-        // Read Anthropic key from state store
+        // Auth: prefer API key if set, otherwise rely on OAuth session (~/.claude/)
         std::string key_prefix;
         auto anthropic_key = ctx_.state_store.fetch("provider:anthropic", 0);
         if (anthropic_key && anthropic_key->is_object() && anthropic_key->contains("api_key")) {
@@ -3711,11 +3712,13 @@ void ApiServer::setup_routes() {
         } else if (const char* env_key = getenv("ANTHROPIC_API_KEY")) {
             key_prefix = std::string("ANTHROPIC_API_KEY=") + env_key + " ";
         }
+        // If no API key, proceed anyway — Max/Pro plan users are authenticated via
+        // `claude auth login` (OAuth session stored in ~/.claude/), no key needed.
 
         std::string cmd = key_prefix + "claude --bare -p \"" + goal + "\" --output-format json";
         if (!tools_arg.empty()) cmd += " --allowedTools \"" + tools_arg + "\"";
 
-        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "claude-code"}, {"goal", goal.substr(0, 100)}, {"has_key", !key_prefix.empty()}});
+        ctx_.audit_logger.log(AuditCategory::RESOURCE, "RUNTIME_SPAWN", 0, "", {{"runtime", "claude-code"}, {"goal", goal.substr(0, 100)}, {"has_key", !key_prefix.empty()}, {"oauth_fallback", key_prefix.empty()}});
 
         // Execute via popen
         std::string output;
@@ -3795,10 +3798,28 @@ void ApiServer::setup_routes() {
         // CLOVE (always available)
         runtimes.push_back({{"name", "clove"}, {"type", "built-in"}, {"status", "available"}, {"description", "CLOVE kernel RunEngine with 86 syscalls"}});
 
-        // Claude Code (check if installed)
+        // Claude Code (check if installed + check auth method)
         int cc = system("which claude > /dev/null 2>&1");
-        runtimes.push_back({{"name", "claude-code"}, {"type", "subprocess"}, {"status", cc == 0 ? "available" : "not-installed"},
-            {"description", "Anthropic Claude Code — autonomous coding agent"}, {"install", "npm i -g @anthropic-ai/claude-code"}});
+        std::string cc_auth = "none";
+        if (cc == 0) {
+            // Check API key first
+            auto ak = ctx_.state_store.fetch("provider:anthropic", 0);
+            if ((ak && ak->is_object() && ak->contains("api_key")) || getenv("ANTHROPIC_API_KEY")) {
+                cc_auth = "api_key";
+            } else {
+                // Check OAuth session exists in ~/.claude/
+                const char* home = getenv("HOME");
+                if (home && std::filesystem::exists(std::string(home) + "/.claude")) {
+                    cc_auth = "oauth";
+                }
+            }
+        }
+        runtimes.push_back({{"name", "claude-code"}, {"type", "subprocess"},
+            {"status", cc == 0 ? (cc_auth != "none" ? "available" : "auth-required") : "not-installed"},
+            {"auth", cc_auth},
+            {"description", "Anthropic Claude Code — autonomous coding agent"},
+            {"install", "npm i -g @anthropic-ai/claude-code"},
+            {"auth_help", "Run: claude auth login  (works with Max/Pro plan, no API key needed)"}});
 
         // Codex (check if installed)
         int cx = system("which codex > /dev/null 2>&1");
@@ -3946,11 +3967,12 @@ void ApiServer::setup_routes() {
                         for (auto& ch : escaped_goal) { if (ch == '"') ch = '\''; if (ch == '\n') ch = ' '; }
                         if (escaped_goal.size() > 4000) escaped_goal = escaped_goal.substr(0, 4000);
 
-                        // Get Anthropic key
+                        // Auth: API key if available, otherwise OAuth session (~/.claude/)
                         std::string kp;
                         auto ak = ctx_.state_store.fetch("provider:anthropic", 0);
                         if (ak && ak->is_object() && ak->contains("api_key")) kp = "ANTHROPIC_API_KEY=" + ak->at("api_key").get<std::string>() + " ";
                         else if (const char* ek = getenv("ANTHROPIC_API_KEY")) kp = std::string("ANTHROPIC_API_KEY=") + ek + " ";
+                        // No key = Max/Pro OAuth session, proceed without key_prefix
 
                         std::string cmd = kp + "claude --bare -p \"" + escaped_goal + "\" --output-format text 2>&1";
                         FILE* pipe = popen(cmd.c_str(), "r");
