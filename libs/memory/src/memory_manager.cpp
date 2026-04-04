@@ -38,12 +38,12 @@ std::string MemoryManager::remember(
 
 std::string MemoryManager::recall(
     const std::string& agent_name,
-    const std::string& /*workspace_id*/,
+    const std::string& workspace_id,
     const std::string& query,
     int current_step,
     size_t token_budget)
 {
-    auto entries = store_.retrieve(agent_name, query, current_step, token_budget);
+    auto entries = store_.retrieve(agent_name, workspace_id, query, current_step, token_budget);
     if (entries.empty()) return "(no memories found)";
 
     std::string result;

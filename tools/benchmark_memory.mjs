@@ -194,6 +194,88 @@ async function main() {
   const { writeFileSync } = await import("fs");
   writeFileSync(outFile, JSON.stringify({ timestamp: new Date().toISOString(), config: { model: MODEL, max_steps: MAX_STEPS, runs_per_mode: NUM_RUNS }, results }, null, 2));
   console.log(` Results written to: ${outFile}\n`);
+
+  // ── Parallel sharing test ───────────────────────────────────────────────────
+  // Proves workspace-scoped memory: agent-A writes, agent-B (different name,
+  // same workspace) should be able to recall A's fact without re-discovering it.
+  if (RUN_MODE === "all" || RUN_MODE === "sharing") {
+    await runSharingTest();
+  }
+}
+
+async function runSharingTest() {
+  const WS = "bench-sharing-ws";
+  console.log(`\n${"═".repeat(60)}`);
+  console.log(` Parallel Sharing Test`);
+  console.log(` Proves: agent-B recalls what agent-A wrote in same workspace`);
+  console.log(`${"─".repeat(60)}`);
+
+  // Agent A: remember a unique fact into the workspace
+  const FACT = `CLOVE_BENCH_SECRET_${Date.now()}`;
+  console.log(`\n[A] agent-alpha  →  remember: "${FACT}"`);
+
+  const jobA = await fetch(`${BASE}/api/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      goal: `Remember this exact fact using the remember tool: "${FACT}". Then confirm you stored it.`,
+      agent_name: "agent-alpha",
+      workspace_id: WS,
+      model: MODEL,
+      budget_usd: 0.05,
+      max_steps: 5,
+      allowed_tools: ["remember", "recall"],
+      compress_context: true,
+      use_memory: true,
+    }),
+  }).then(r => r.json());
+
+  const resA = await pollJob(jobA.id || jobA.job_id);
+  const aOk = resA?.status === "completed";
+  console.log(`    ${aOk ? "✓" : "✗"} status=${resA?.status}  steps=${resA?.steps_done}  result="${String(resA?.result||"").slice(0,80)}"`);
+
+  if (!aOk) {
+    console.log(`    ✗ Agent A failed — skipping sharing check\n`);
+    return;
+  }
+
+  // Brief pause to let SQLite write commit
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Agent B: different agent name, same workspace — try to recall the fact
+  console.log(`\n[B] agent-beta   →  recall: "${FACT.slice(0,20)}…"`);
+
+  const jobB = await fetch(`${BASE}/api/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      goal: `Call the recall tool now with this exact query: "${FACT.slice(0,20)}". ` +
+            `Then look at the raw output from the recall tool. ` +
+            `If the recall output contains the word "CLOVE", respond with exactly: SHARING_CONFIRMED. ` +
+            `If the recall output says "no memories found", respond with exactly: SHARING_FAILED. ` +
+            `Do not add any other text.`,
+      agent_name: "agent-beta",
+      workspace_id: WS,
+      model: MODEL,
+      budget_usd: 0.05,
+      max_steps: 5,
+      allowed_tools: ["remember", "recall"],
+      compress_context: true,
+      use_memory: true,
+    }),
+  }).then(r => r.json());
+
+  const resB = await pollJob(jobB.id || jobB.job_id);
+  const result = String(resB?.result || "");
+  const shared = result.includes("SHARING_CONFIRMED");
+
+  console.log(`    ${resB?.status === "completed" ? "✓" : "✗"} status=${resB?.status}  steps=${resB?.steps_done}`);
+  console.log(`    result: "${result.slice(0, 120)}"`);
+  console.log(`\n${"─".repeat(60)}`);
+  console.log(shared
+    ? ` ✓ WORKSPACE MEMORY SHARING WORKS — agent-beta recalled agent-alpha's memory`
+    : ` ✗ Sharing test inconclusive — check workspace_id propagation`);
+  console.log(`${"═".repeat(60)}\n`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

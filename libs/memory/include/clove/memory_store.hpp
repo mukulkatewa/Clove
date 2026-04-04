@@ -23,8 +23,13 @@ public:
     ///       + 0.25 × keyword_overlap(query, content)
     /// Returns entries in order: PROCEDURAL → SEMANTIC → EPISODIC
     /// (Lost in the Middle positioning: high-value at context boundaries)
+    ///
+    /// Workspace sharing: if workspace_id is non-empty, also includes SEMANTIC
+    /// and PROCEDURAL entries written by other agents in the same workspace.
+    /// EPISODIC is always private (per-agent, volatile).
     std::vector<MemoryEntry> retrieve(
         const std::string& agent_name,
+        const std::string& workspace_id,
         const std::string& query,
         int current_step,
         size_t token_budget = 2000,

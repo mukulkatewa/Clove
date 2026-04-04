@@ -75,6 +75,7 @@ static std::vector<MemoryEntry> load_stmt(sqlite3_stmt* stmt) {
 
 std::vector<MemoryEntry> MemoryStore::retrieve(
     const std::string& agent_name,
+    const std::string& workspace_id,
     const std::string& query,
     int current_step,
     size_t token_budget,
@@ -84,14 +85,34 @@ std::vector<MemoryEntry> MemoryStore::retrieve(
     sqlite3* db = db_.handle();
     if (!db) return {};
 
-    std::string sql = "SELECT * FROM agent_memory WHERE agent_name = ?";
-    if (tier_filter)
-        sql += " AND tier = " + std::to_string(static_cast<int>(*tier_filter));
-    sql += " ORDER BY created_at_ms DESC LIMIT 500";
+    // Private memories: all tiers for this agent
+    // Shared memories: SEMANTIC (tier=1) + PROCEDURAL (tier=2) from any agent
+    //                  in the same workspace (workspace_id must be non-empty)
+    std::string sql;
+    if (!workspace_id.empty()) {
+        sql = "SELECT * FROM agent_memory WHERE "
+              "(agent_name = ?)";
+        if (tier_filter)
+            sql += " AND tier = " + std::to_string(static_cast<int>(*tier_filter));
+        sql += " UNION SELECT * FROM agent_memory WHERE "
+               "(workspace_id = ? AND workspace_id != '' AND agent_name != ? AND tier >= 1)";
+        if (tier_filter)
+            sql += " AND tier = " + std::to_string(static_cast<int>(*tier_filter));
+        sql += " ORDER BY created_at_ms DESC LIMIT 500";
+    } else {
+        sql = "SELECT * FROM agent_memory WHERE agent_name = ?";
+        if (tier_filter)
+            sql += " AND tier = " + std::to_string(static_cast<int>(*tier_filter));
+        sql += " ORDER BY created_at_ms DESC LIMIT 500";
+    }
 
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return {};
     sqlite3_bind_text(stmt, 1, agent_name.c_str(), -1, SQLITE_TRANSIENT);
+    if (!workspace_id.empty()) {
+        sqlite3_bind_text(stmt, 2, workspace_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, agent_name.c_str(),   -1, SQLITE_TRANSIENT);
+    }
     auto candidates = load_stmt(stmt);
     sqlite3_finalize(stmt);
 
