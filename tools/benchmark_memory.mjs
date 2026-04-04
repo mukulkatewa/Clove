@@ -43,14 +43,15 @@ async function submitJob(goal, workspaceId) {
       goal,
       agent_name: "bench-agent",
       workspace_id: workspaceId,
-      model: "claude-haiku-4-5-20251001",
+      model: "openai/gpt-4o-mini",
       budget_usd: 0.10,
       max_steps: MAX_STEPS,
       allowed_tools: ["read_file", "write_file", "exec", "search", "remember", "recall"],
     }),
   });
   if (!res.ok) throw new Error(`submit failed: ${res.status} ${await res.text()}`);
-  return (await res.json()).job_id;
+  const body = await res.json();
+  return body.id || body.job_id;
 }
 
 async function pollJob(jobId, timeoutMs = 120_000) {
@@ -68,24 +69,16 @@ async function pollJob(jobId, timeoutMs = 120_000) {
 }
 
 async function ensureWorkspace(name) {
-  // Try to find existing
-  const list = await fetch(`${BASE}/api/workspaces`);
+  // Try to find existing world/workspace
+  const list = await fetch(`${BASE}/api/worlds`);
   if (list.ok) {
     const ws = await list.json();
-    const found = (ws.workspaces || ws).find(w => w.name === name || w.id === name);
+    const arr = Array.isArray(ws) ? ws : (ws.worlds || ws.workspaces || []);
+    const found = arr.find(w => w.name === name || w.id === name);
     if (found) return found.id;
   }
-  // Create
-  const res = await fetch(`${BASE}/api/workspaces`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, description: "Memory benchmark workspace" }),
-  });
-  if (!res.ok) {
-    console.warn(`Could not create workspace '${name}', using default`);
-    return "";
-  }
-  return (await res.json()).id || "";
+  // No workspace needed — jobs run without one
+  return "";
 }
 
 // ── Run benchmark ─────────────────────────────────────────────────────────────

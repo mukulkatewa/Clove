@@ -2315,7 +2315,7 @@ void ApiServer::setup_routes() {
             arr.push_back({
                 {"id", j.id}, {"agent_name", j.agent_name}, {"workspace_id", j.workspace_id},
                 {"goal", j.goal}, {"status", j.status}, {"model", j.model},
-                {"steps", j.steps_done}, {"steps_done", j.steps_done}, {"cost_usd", j.cost_usd},
+                {"steps", j.steps_done}, {"steps_done", j.steps_done}, {"tokens", j.tokens}, {"cost_usd", j.cost_usd},
                 {"priority", j.priority}, {"error", j.error}, {"result", j.result},
                 {"budget_usd", j.budget_usd}, {"max_steps", j.max_steps},
                 {"allowed_tools", j.allowed_tools}, {"submitted_at", j.submitted_at},
@@ -2340,7 +2340,7 @@ void ApiServer::setup_routes() {
         res.set_content(json({
             {"id", job->id}, {"agent_name", job->agent_name}, {"workspace_id", job->workspace_id},
             {"goal", job->goal}, {"status", job->status}, {"model", job->model},
-            {"steps", job->steps_done}, {"steps_done", job->steps_done}, {"cost_usd", job->cost_usd},
+            {"steps", job->steps_done}, {"steps_done", job->steps_done}, {"tokens", job->tokens}, {"cost_usd", job->cost_usd},
             {"priority", job->priority}, {"result", job->result}, {"error", job->error},
             {"steps_log", job->steps_log}, {"budget_usd", job->budget_usd},
             {"max_steps", job->max_steps}, {"allowed_tools", job->allowed_tools},

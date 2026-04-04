@@ -52,6 +52,7 @@ struct Job {
     std::string error;
     nlohmann::json steps_log = nlohmann::json::array();
     int         steps_done  = 0;
+    int         tokens      = 0;
     double      cost_usd    = 0.0;
     std::string result;
 };

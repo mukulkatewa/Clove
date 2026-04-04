@@ -317,7 +317,8 @@ void JobQueue::execute_job(Job& job) {
     job.result   = result.content;
     job.error    = result.error;
     job.steps_done = result.steps;
-    job.cost_usd = result.total_cost_usd;
+    job.tokens     = result.total_tokens;
+    job.cost_usd   = result.total_cost_usd;
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────────────
