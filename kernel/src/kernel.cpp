@@ -37,6 +37,7 @@
 #include <clove/artifact_store_db.hpp>
 #include <clove/memory_block_store.hpp>
 #include <clove/memory_block_db.hpp>
+#include <clove/memory_manager.hpp>
 #include <clove/agent_scheduler.hpp>
 #include <clove/sandbox.hpp>
 #include <clove/openclaw_manager.hpp>
@@ -60,6 +61,7 @@ namespace clove {
         OpenRouterClient& openrouter, AnthropicClient* anthropic, InferenceGateway& inference, PrivacyFilter& privacy,
         AuditLogger& audit, StateStore& state, PermissionsStore& perms,
         ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+        MemoryManager* memory_mgr,
         McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
         const std::string& goal, const std::string& model, double budget,
         const std::string& agent_name, const std::vector<std::string>& tools);
@@ -390,6 +392,10 @@ bool Kernel::init() {
             agent_run_db_  = std::make_unique<AgentRunDb>(*database_);
             swarm_db_      = std::make_unique<SwarmDb>(*database_);
 
+            // Three-tier memory manager — backed by the same SQLite database
+            memory_manager_ = std::make_unique<MemoryManager>(*database_);
+            spdlog::info("MemoryManager: three-tier memory system ready");
+
             // Supabase cloud sync — reads from env vars
             {
                 const char* url = std::getenv("SUPABASE_URL");
@@ -419,6 +425,7 @@ bool Kernel::init() {
                     *openrouter_, anthropic_client_.get(), *inference_gateway_, *privacy_filter_,
                     *audit_logger_, *state_store_, *permissions_store_,
                     artifact_store_.get(), chain_store_.get(), memory_block_store_.get(),
+                    memory_manager_.get(),
                     mcp_bridge_.get(), context_assembler_.get(), config_,
                     agent_run_db_.get(), supabase_sync_.get()
                 };
@@ -557,7 +564,8 @@ bool Kernel::init() {
                 *openrouter_, anthropic_client_.get(), *inference_gateway_, *privacy_filter_,
                 *audit_logger_, *state_store_, *permissions_store_,
                 artifact_store_.get(), chain_store_.get(),
-                memory_block_store_.get(), mcp_bridge_.get(), context_assembler_.get(), config_,
+                memory_block_store_.get(), memory_manager_.get(),
+                mcp_bridge_.get(), context_assembler_.get(), config_,
                 goal, model, budget, agent_name, tools);
 
             return nlohmann::json({

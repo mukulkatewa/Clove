@@ -27,6 +27,7 @@ class PermissionsStore;
 class ArtifactStore;
 class ChainStore;
 class MemoryBlockStore;
+class MemoryManager;
 class McpBridge;
 class ContextAssembler;
 struct KernelConfig;
@@ -67,6 +68,7 @@ struct JobQueueDeps {
     ArtifactStore*     artifacts;
     ChainStore*        chains;
     MemoryBlockStore*  memory;
+    MemoryManager*     memory_manager; // nullable — three-tier memory
     McpBridge*         mcp;
     ContextAssembler*  assembler;
     const KernelConfig& config;

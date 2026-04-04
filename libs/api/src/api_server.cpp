@@ -187,7 +187,7 @@ void ApiServer::run_scheduler() {
                     RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                         ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                         ctx_.artifact_store, ctx_.chain_store,
-                        ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+                        ctx_.memory_blocks, nullptr, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
                     RunConfig cfg;
                     cfg.goal = goal;
                     cfg.budget_usd = budget;
@@ -582,7 +582,7 @@ void ApiServer::setup_routes() {
         RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                          ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                          ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
-                         ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+                         nullptr, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
 
         auto result = engine.execute(cfg);
 
@@ -2179,7 +2179,7 @@ void ApiServer::setup_routes() {
             RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                              ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                              ctx_.artifact_store, ctx_.chain_store,
-                             ctx_.memory_blocks, ctx_.mcp_bridge, ctx_.assembler,
+                             ctx_.memory_blocks, nullptr, ctx_.mcp_bridge, ctx_.assembler,
                              ctx_.config);
 
             auto result = engine.execute(cfg);
@@ -2501,7 +2501,7 @@ void ApiServer::setup_routes() {
             (size_t /*offset*/, httplib::DataSink& sink) -> bool {
 
                 RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit, *state, *perms,
-                                 artifacts, chains, memory, mcp, assembler, *config);
+                                 artifacts, chains, memory, nullptr, mcp, assembler, *config);
 
                 auto result = engine.execute(cfg, [&sink](const RunEvent& ev) {
                     json event_data;
@@ -2664,7 +2664,7 @@ void ApiServer::setup_routes() {
                         cfg.agent_name = agent_name;
 
                         RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
-                                         *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
+                                         *state, *perms, artifacts, chains, memory, nullptr, mcp, assembler, *config);
 
                         results[i] = engine.execute(cfg, [&, i](const RunEvent& ev) {
                             json wrapped;
@@ -4021,7 +4021,7 @@ void ApiServer::setup_routes() {
                         cfg.agent_name = step_name;
 
                         RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
-                                         *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
+                                         *state, *perms, artifacts, chains, memory, nullptr, mcp, assembler, *config);
 
                         auto result = engine.execute(cfg, [&emit, &step_name, &i](const RunEvent& ev) {
                             json wrapped;
@@ -4185,7 +4185,7 @@ void ApiServer::setup_routes() {
             RunEngine engine(*ctx_.openrouter, ctx_.anthropic, ctx_.inference_gateway, ctx_.privacy_filter,
                              ctx_.audit_logger, ctx_.state_store, ctx_.permissions_store,
                              ctx_.artifact_store, ctx_.chain_store, ctx_.memory_blocks,
-                             ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
+                             nullptr, ctx_.mcp_bridge, ctx_.assembler, ctx_.config);
 
             auto result = engine.execute(cfg);
 
@@ -4319,7 +4319,7 @@ void ApiServer::setup_routes() {
 
                 std::thread([=]() {
                     RunEngine engine(*openrouter, nullptr, *gateway, *privacy, *audit,
-                                     *state, *perms, artifacts, chains, memory, mcp, assembler, *config);
+                                     *state, *perms, artifacts, chains, memory, nullptr, mcp, assembler, *config);
                     engine.execute(cfg);
                 }).detach();
 
@@ -4401,7 +4401,7 @@ void ApiServer::setup_routes() {
                         RunConfig cfg;
                         cfg.goal = goal; cfg.model = model; cfg.budget_usd = budget; cfg.max_steps = msteps;
                         cfg.allowed_tools = tools; cfg.agent_name = sname;
-                        RunEngine engine(*openrouter_p, nullptr, *gateway_p, *privacy_p, *audit_p, *state_p, *perms_p, artifacts_p, chains_p, memory_p, mcp_p, assembler_p, *config_p);
+                        RunEngine engine(*openrouter_p, nullptr, *gateway_p, *privacy_p, *audit_p, *state_p, *perms_p, artifacts_p, chains_p, memory_p, nullptr, mcp_p, assembler_p, *config_p);
                         auto r = engine.execute(cfg);
                         output = r.content;
                         if (!r.success) break;

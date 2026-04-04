@@ -1,4 +1,6 @@
 #include <clove/run_engine.hpp>
+#include <clove/memory_manager.hpp>
+#include <clove/step_compressor.hpp>
 #include <clove/openrouter.hpp>
 #include <clove/anthropic_client.hpp>
 #include <clove/inference_gateway.hpp>
@@ -46,6 +48,7 @@ RunEngine::RunEngine(
     ArtifactStore* artifacts,
     ChainStore* chains,
     MemoryBlockStore* memory,
+    MemoryManager*    memory_mgr,
     McpBridge* mcp,
     ContextAssembler* assembler,
     const KernelConfig& config)
@@ -59,6 +62,7 @@ RunEngine::RunEngine(
     , artifacts_(artifacts)
     , chains_(chains)
     , memory_(memory)
+    , memory_mgr_(memory_mgr)
     , mcp_(mcp)
     , assembler_(assembler)
     , config_(config)
@@ -325,62 +329,81 @@ std::string RunEngine::tool_mcp_call(
 }
 
 std::string RunEngine::tool_remember(const std::string& fact) {
-    if (!memory_) {
-        // Fallback to state store
-        state_.store("memory:" + fact.substr(0, 50), fact, 0);
-        return "remembered (via state store)";
+    // ── Three-tier memory (primary path) ──
+    if (memory_mgr_ && active_cfg_) {
+        return memory_mgr_->remember(
+            active_cfg_->agent_name,
+            active_cfg_->workspace_id,
+            active_cfg_->run_id,
+            current_step_,
+            fact);
     }
-    // Create or append to agent memory block
-    auto blocks = memory_->list(0, 100);
-    std::string block_id;
-    for (const auto& b : blocks) {
-        if (b.name == "agent-memory" && b.type == MemoryBlockType::CORE) {
-            block_id = b.id;
-            break;
+
+    // ── Legacy MemoryBlockStore (fallback) ──
+    if (memory_) {
+        auto blocks = memory_->list(0, 100);
+        std::string block_id;
+        for (const auto& b : blocks) {
+            if (b.name == "agent-memory" && b.type == MemoryBlockType::CORE) {
+                block_id = b.id;
+                break;
+            }
         }
+        if (block_id.empty()) {
+            auto block = memory_->create(0, "agent-memory", MemoryBlockType::CORE,
+                                          MemoryAccess::PRIVATE, "", 0);
+            block_id = block.id;
+        }
+        memory_->append(block_id, "\n" + fact, 0);
+        return "remembered: " + fact.substr(0, 100);
     }
-    if (block_id.empty()) {
-        auto block = memory_->create(0, "agent-memory", MemoryBlockType::CORE,
-                                      MemoryAccess::PRIVATE, "", 0);
-        block_id = block.id;
-    }
-    memory_->append(block_id, "\n" + fact, 0);
-    return "remembered: " + fact.substr(0, 100);
+
+    // ── State store fallback ──
+    state_.store("memory:" + fact.substr(0, 50), fact, 0);
+    return "remembered (via state store)";
 }
 
 std::string RunEngine::tool_recall(const std::string& query) {
-    if (!memory_) {
-        // Fallback: search state store
-        auto keys = state_.keys("memory:", 0);
-        std::string results;
-        for (const auto& k : keys) {
-            auto val = state_.fetch(k, 0);
-            if (val) results += *val + "\n";
-        }
-        return results.empty() ? "(no memories found)" : results;
+    // ── Three-tier memory (primary path) ──
+    if (memory_mgr_ && active_cfg_) {
+        return memory_mgr_->recall(
+            active_cfg_->agent_name,
+            active_cfg_->workspace_id,
+            query,
+            current_step_,
+            2000);  // 2000 token budget ≈ ~8000 chars of context
     }
 
-    // Use relevance-scored search (keyword overlap + recency + type priority)
-    auto scored = memory_->search(query, agent_id_, 10);
-    if (scored.empty()) {
-        // Fallback: return all blocks if search returns nothing
-        auto all = memory_->list(agent_id_, 100);
-        if (all.empty()) return "(no memories found)";
+    // ── Legacy MemoryBlockStore (fallback) ──
+    if (memory_) {
+        auto scored = memory_->search(query, agent_id_, 10);
+        if (scored.empty()) {
+            auto all = memory_->list(agent_id_, 100);
+            if (all.empty()) return "(no memories found)";
+            std::string result;
+            for (const auto& b : all) {
+                result += "[" + std::string(memory_block_type_to_string(b.type)) + "] " +
+                          b.name + ":\n" + b.content + "\n\n";
+            }
+            return result;
+        }
         std::string result;
-        for (const auto& b : all) {
-            result += "[" + std::string(memory_block_type_to_string(b.type)) + "] " +
-                      b.name + ":\n" + b.content + "\n\n";
+        for (const auto& sb : scored) {
+            result += "[" + std::string(memory_block_type_to_string(sb.block.type)) +
+                      " | score:" + std::to_string(static_cast<int>(sb.score * 100)) + "%] " +
+                      sb.block.name + ":\n" + sb.block.content + "\n\n";
         }
         return result;
     }
 
-    std::string result;
-    for (const auto& sb : scored) {
-        result += "[" + std::string(memory_block_type_to_string(sb.block.type)) +
-                  " | score:" + std::to_string(static_cast<int>(sb.score * 100)) + "%] " +
-                  sb.block.name + ":\n" + sb.block.content + "\n\n";
+    // ── State store fallback ──
+    auto keys = state_.keys("memory:", 0);
+    std::string results;
+    for (const auto& k : keys) {
+        auto val = state_.fetch(k, 0);
+        if (val) results += *val + "\n";
     }
-    return result;
+    return results.empty() ? "(no memories found)" : results;
 }
 
 // ── Tool dispatch ───────────────────────────────────────────────
@@ -760,6 +783,7 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
            !cancelled_)
     {
         result.steps++;
+        current_step_ = result.steps;
 
         emit(on_event, "thinking", {
             {"step", result.steps},
@@ -978,7 +1002,7 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             messages.push_back({
                 {"role", "tool"},
                 {"tool_call_id", tool_id},
-                {"content", tool_result}
+                {"content", StepCompressor::compress(tool_name, tool_result)}
             });
         }
     }
@@ -1158,7 +1182,8 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
                     });
 
                     messages.push_back({
-                        {"role", "tool"}, {"tool_call_id", tool_id}, {"content", tool_result}
+                        {"role", "tool"}, {"tool_call_id", tool_id},
+                        {"content", StepCompressor::compress(tool_name, tool_result)}
                     });
                 }
             }
@@ -1169,6 +1194,11 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     if (artifacts_ && !chain_id.empty() && !result.content.empty()) {
         artifacts_->create(0, ArtifactType::REPORT,
             "Run Result: " + cfg.agent_name, result.content, chain_id);
+    }
+
+    // Post-run memory consolidation: EPISODIC → SEMANTIC
+    if (memory_mgr_ && !cfg.run_id.empty()) {
+        memory_mgr_->consolidate(cfg.agent_name, cfg.run_id);
     }
 
     // Audit
@@ -1199,12 +1229,13 @@ RunResult run_engine_execute_standalone(
     OpenRouterClient& openrouter, AnthropicClient* anthropic, InferenceGateway& inference, PrivacyFilter& privacy,
     AuditLogger& audit, StateStore& state, PermissionsStore& perms,
     ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+    MemoryManager* memory_mgr,
     McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
     const std::string& goal, const std::string& model, double budget,
     const std::string& agent_name, const std::vector<std::string>& tools)
 {
     RunEngine engine(openrouter, anthropic, inference, privacy, audit, state, perms,
-        artifacts, chains, memory, mcp, assembler, config);
+        artifacts, chains, memory, memory_mgr, mcp, assembler, config);
     RunConfig cfg;
     cfg.goal = goal;
     cfg.model = model;

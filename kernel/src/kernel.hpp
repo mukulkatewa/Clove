@@ -48,6 +48,7 @@ class ContextAssembler;
 class ArtifactStoreDb;
 class MemoryBlockStore;
 class MemoryBlockDb;
+class MemoryManager;
 class AgentScheduler;
 class OpenRouterClient;
 class SandboxManager;
@@ -118,6 +119,7 @@ private:
     std::unique_ptr<ArtifactStoreDb> artifact_store_db_;
     std::unique_ptr<MemoryBlockStore> memory_block_store_;
     std::unique_ptr<MemoryBlockDb> memory_block_db_;
+    std::unique_ptr<MemoryManager> memory_manager_;
     std::unique_ptr<AgentScheduler> scheduler_;
     std::shared_ptr<OpenRouterClient> openrouter_;
     std::unique_ptr<SandboxManager> sandbox_manager_;

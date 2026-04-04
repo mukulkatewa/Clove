@@ -268,7 +268,7 @@ void JobQueue::execute_job(Job& job) {
     RunEngine engine(
         deps_.openrouter, deps_.anthropic, deps_.inference, deps_.privacy,
         deps_.audit, deps_.state, deps_.permissions,
-        deps_.artifacts, deps_.chains, deps_.memory,
+        deps_.artifacts, deps_.chains, deps_.memory, deps_.memory_manager,
         deps_.mcp, deps_.assembler, deps_.config);
 
     RunResult result;

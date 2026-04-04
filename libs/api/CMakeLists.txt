@@ -16,6 +16,7 @@ target_link_libraries(clove_api PUBLIC
     clove_worlds
     clove_context
     clove_persistence
+    clove_memory
     nlohmann_json::nlohmann_json
     httplib::httplib
     Threads::Threads

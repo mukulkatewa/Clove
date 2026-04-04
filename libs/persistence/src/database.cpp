@@ -231,6 +231,28 @@ bool Database::create_schema() {
         CREATE INDEX IF NOT EXISTS idx_swarm_status ON swarms(status);
 
         INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+
+        -- Three-tier agent memory (ENGRAM-inspired: episodic/semantic/procedural)
+        -- Scored retrieval: 0.40*recency_decay + 0.35*importance + 0.25*keyword_overlap
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            id              TEXT    PRIMARY KEY,
+            agent_name      TEXT    NOT NULL,
+            workspace_id    TEXT    NOT NULL DEFAULT '',
+            tier            INTEGER NOT NULL DEFAULT 0,  -- 0=EPISODIC 1=SEMANTIC 2=PROCEDURAL
+            content         TEXT    NOT NULL DEFAULT '',
+            importance      REAL    NOT NULL DEFAULT 5.0, -- 1.0–10.0, scored at write time
+            recency_step    INTEGER NOT NULL DEFAULT 0,   -- step index when written
+            causal_parent   TEXT    NOT NULL DEFAULT '',  -- id of causal predecessor
+            source_run_id   TEXT    NOT NULL DEFAULT '',
+            created_at_ms   INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agentmem_agent    ON agent_memory(agent_name);
+        CREATE INDEX IF NOT EXISTS idx_agentmem_tier     ON agent_memory(tier);
+        CREATE INDEX IF NOT EXISTS idx_agentmem_run      ON agent_memory(source_run_id);
+        CREATE INDEX IF NOT EXISTS idx_agentmem_created  ON agent_memory(created_at_ms DESC);
+
+        INSERT OR IGNORE INTO schema_version (version) VALUES (3);
     )SQL";
 
     return exec(schema);

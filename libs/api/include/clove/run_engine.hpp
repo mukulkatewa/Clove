@@ -19,6 +19,7 @@ class StateStore;
 class ArtifactStore;
 class ChainStore;
 class MemoryBlockStore;
+class MemoryManager;
 class McpBridge;
 class ContextAssembler;
 class PermissionsStore;
@@ -73,7 +74,8 @@ public:
         PermissionsStore& permissions,
         ArtifactStore* artifacts,        // nullable
         ChainStore* chains,              // nullable
-        MemoryBlockStore* memory,        // nullable
+        MemoryBlockStore* memory,        // nullable (legacy)
+        MemoryManager*    memory_mgr,    // nullable — three-tier memory system
         McpBridge* mcp,                  // nullable
         ContextAssembler* assembler,     // nullable
         const KernelConfig& config
@@ -97,11 +99,13 @@ private:
     ArtifactStore* artifacts_;
     ChainStore* chains_;
     MemoryBlockStore* memory_;
+    MemoryManager*    memory_mgr_;
     McpBridge* mcp_;
     ContextAssembler* assembler_;
     const KernelConfig& config_;
     std::atomic<bool> cancelled_{false};
     uint32_t agent_id_ = 0;       // set per-run for permission checks
+    int current_step_ = 0;        // current loop iteration — used by memory scoring
     const RunConfig* active_cfg_ = nullptr;  // current run config (for sub-agent spawning)
 
     nlohmann::json build_tools(const std::vector<std::string>& allowed);
