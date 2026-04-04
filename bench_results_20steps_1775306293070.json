@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-04-04T12:38:13.068Z",
+  "config": {
+    "max_steps": 20,
+    "num_runs": 5,
+    "workspace": "bench-ws"
+  },
+  "metrics": {
+    "CPR": null,
+    "LTCR": 0
+  },
+  "totals": {
+    "jobs_started": 5,
+    "jobs_completed": 0,
+    "tokens": 0,
+    "cost_usd": 0
+  },
+  "runs": []
+}

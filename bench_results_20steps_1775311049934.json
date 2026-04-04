@@ -1,0 +1,100 @@
+{
+  "timestamp": "2026-04-04T13:57:29.931Z",
+  "config": {
+    "max_steps": 20,
+    "num_runs": 10,
+    "workspace": "bench-ws"
+  },
+  "metrics": {
+    "CPR": 2535,
+    "LTCR": 100
+  },
+  "totals": {
+    "jobs_started": 10,
+    "jobs_completed": 10,
+    "tokens": 25348,
+    "cost_usd": 0.004527150000000001
+  },
+  "runs": [
+    {
+      "jobId": "72b5916e-effb-4f31-976c-ab3c1eff4501",
+      "status": "completed",
+      "tokens": 4792,
+      "cost": 0.0007908,
+      "steps": 6,
+      "task": "List all files in the current directory and count "
+    },
+    {
+      "jobId": "19f4d5fe-af34-49e1-9570-dc090ca86e9c",
+      "status": "completed",
+      "tokens": 1596,
+      "cost": 0.00027855,
+      "steps": 2,
+      "task": "Remember the fact: the sky is blue. Then recall: w"
+    },
+    {
+      "jobId": "df443744-8fde-45fa-b3fc-092ba4b60b59",
+      "status": "completed",
+      "tokens": 1685,
+      "cost": 0.00032070000000000004,
+      "steps": 2,
+      "task": "Search for 'CLOVE kernel architecture' and summari"
+    },
+    {
+      "jobId": "6e6208eb-638a-432f-a65d-c9c76884c28d",
+      "status": "completed",
+      "tokens": 1587,
+      "cost": 0.00027855,
+      "steps": 2,
+      "task": "Write a file called /tmp/bench_test.txt with conte"
+    },
+    {
+      "jobId": "89db7d5f-22a8-44d3-91a0-be2a5aaaf0a2",
+      "status": "completed",
+      "tokens": 1493,
+      "cost": 0.00024465,
+      "steps": 2,
+      "task": "What is 2 + 2? Use the exec tool to run: echo $((2"
+    },
+    {
+      "jobId": "147dd7c0-023e-4fbe-8f4e-aa1a4d8b1217",
+      "status": "completed",
+      "tokens": 3862,
+      "cost": 0.0006252,
+      "steps": 5,
+      "task": "List all files in the current directory and count "
+    },
+    {
+      "jobId": "ea62fc79-7e77-4d2c-98e1-01b662675fdc",
+      "status": "completed",
+      "tokens": 1600,
+      "cost": 0.00027465,
+      "steps": 2,
+      "task": "Remember the fact: the sky is blue. Then recall: w"
+    },
+    {
+      "jobId": "1f9ed859-f936-474c-832a-88a436edc141",
+      "status": "completed",
+      "tokens": 5643,
+      "cost": 0.00118485,
+      "steps": 5,
+      "task": "Search for 'CLOVE kernel architecture' and summari"
+    },
+    {
+      "jobId": "87a246b3-7001-4de9-baa6-d00be2df92eb",
+      "status": "completed",
+      "tokens": 1592,
+      "cost": 0.00028155,
+      "steps": 2,
+      "task": "Write a file called /tmp/bench_test.txt with conte"
+    },
+    {
+      "jobId": "8b2f0fd8-f22c-403a-89f7-916b062635b1",
+      "status": "completed",
+      "tokens": 1498,
+      "cost": 0.00024765,
+      "steps": 2,
+      "task": "What is 2 + 2? Use the exec tool to run: echo $((2"
+    }
+  ]
+}
