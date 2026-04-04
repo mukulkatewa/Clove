@@ -33,3 +33,10 @@ report.md
 
 # Dashboard moved to frontend branch (clove-website repo)
 dashboard/
+
+# Local Claude Code settings (may contain API keys in bash command history)
+.claude/settings.local.json
+
+# Benchmark output files
+bench_ab_*.json
+bench_results*.json
