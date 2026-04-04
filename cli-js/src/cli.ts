@@ -38,6 +38,7 @@ interface CloveConfig {
   privacy: boolean
   privacyMode: string
   sandbox: boolean
+  model?: string
 }
 
 function loadConfig(): CloveConfig {
@@ -238,23 +239,40 @@ async function cmdStatus(): Promise<void> {
   console.log('')
 }
 
-async function cmdRun(goal: string, budget = 0.50): Promise<void> {
+async function cmdRun(goal: string, opts: {
+  budget?: number; model?: string; steps?: number;
+  compress?: boolean; memory?: boolean; agent?: string;
+} = {}): Promise<void> {
   const cfg = loadConfig()
   if (!await isRunning(cfg.apiPort)) {
     console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start'))
     return
   }
 
+  const budget = opts.budget ?? 0.50
+  const model  = opts.model  ?? cfg.model ?? ''
+  const maxSteps = opts.steps ?? 20
+  const compress = opts.compress !== false   // default true
+  const memory   = opts.memory  !== false    // default true
+
   console.log(c.cyan('Running agent...'))
-  console.log(c.dim(`  Goal: ${goal}`))
-  console.log(c.dim(`  Budget: $${budget}`))
+  console.log(c.dim(`  Goal:     ${goal}`))
+  console.log(c.dim(`  Budget:   $${budget}`))
+  if (model) console.log(c.dim(`  Model:    ${model}`))
+  console.log(c.dim(`  Steps:    ${maxSteps}  Compress: ${compress}  Memory: ${memory}`))
   console.log('')
 
   const result = await api<{
     success: boolean; content: string; total_cost_usd: number;
     steps: number; total_tokens: number;
     step_log: Array<{ step: number; tool: string; args: unknown }>
-  }>(cfg.apiPort, '/api/run', 'POST', { goal, budget })
+  }>(cfg.apiPort, '/api/run', 'POST', {
+    goal, budget, max_steps: maxSteps,
+    ...(model ? { model } : {}),
+    ...(opts.agent ? { agent_name: opts.agent } : {}),
+    compress_context: compress,
+    use_memory: memory,
+  })
 
   if (!result) {
     console.log(c.red('Failed to reach kernel'))
@@ -273,7 +291,7 @@ async function cmdRun(goal: string, budget = 0.50): Promise<void> {
   // Result
   console.log(result.content)
   console.log('')
-  console.log(c.dim(`${result.success ? c.green('OK') : c.red('FAILED')} | ${result.steps} steps | ${result.total_tokens} tokens | $${result.total_cost_usd.toFixed(6)}`))
+  console.log(c.dim(`${result.success ? c.green('OK') : c.red('FAILED')} | ${result.steps} steps | ${result.total_tokens} tokens | $${(result.total_cost_usd ?? 0).toFixed(6)}`))
 }
 
 async function cmdFleet(goal: string, agents = 3, budget = 1.0, world?: string): Promise<void> {
@@ -344,19 +362,72 @@ function printFleetEvent(ev: { type: string; data: Record<string, unknown> }): v
   }
 }
 
-async function cmdRecall(): Promise<void> {
+async function cmdMemory(args: string[]): Promise<void> {
   const cfg = loadConfig()
-  const result = await api<{ blocks: Array<{ name: string; type: string; content: string; access: string }>; count: number }>(cfg.apiPort, '/api/memory')
-  if (!result || result.count === 0) {
-    console.log(c.dim('No memory blocks'))
-    return
-  }
-  console.log(c.bold(`  ${result.count} memory block(s)`))
-  console.log('')
-  for (const b of result.blocks) {
-    console.log(c.cyan(`  [${b.type}/${b.access}] ${b.name}`))
-    console.log(`  ${b.content.slice(0, 200)}`)
-    console.log('')
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      // New three-tier memory: query /api/memory/list?agent=<name>
+      const agent = args[1] || ''
+      const url = agent ? `/api/memory/list?agent=${encodeURIComponent(agent)}` : '/api/memory/list'
+      const result = await api<{
+        entries: Array<{ id: string; agent_name: string; tier: number; content: string; importance: number; score?: number }>
+        count: number
+      }>(cfg.apiPort, url)
+
+      // Fallback: old memory block store
+      if (!result?.entries) {
+        const old = await api<{ blocks: Array<{ name: string; type: string; content: string }>; count: number }>(cfg.apiPort, '/api/memory')
+        if (!old || old.count === 0) { console.log(c.dim('  No memories')); return }
+        console.log(c.bold(`  ${old.count} memory block(s) (legacy)`))
+        for (const b of old.blocks) {
+          console.log(c.cyan(`  [${b.type}] ${b.name}`))
+          console.log(`  ${b.content.slice(0, 200)}\n`)
+        }
+        return
+      }
+
+      const TIER = ['EPISODIC', 'SEMANTIC', 'PROCEDURAL']
+      const TIER_COLOR = [c.dim, c.cyan, c.bold]
+      console.log('')
+      console.log(c.bold(`  ${result.count} memor${result.count === 1 ? 'y' : 'ies'}`))
+      console.log(c.dim('  ' + '─'.repeat(50)))
+      for (const e of result.entries) {
+        const tier = TIER[e.tier] ?? `tier${e.tier}`
+        const color = TIER_COLOR[e.tier] ?? c.dim
+        console.log(`  ${color(`[${tier}]`)} ${c.dim(e.agent_name)}  imp=${e.importance.toFixed(1)}`)
+        console.log(`  ${e.content.slice(0, 160)}`)
+        console.log('')
+      }
+      break
+    }
+    case 'recall': {
+      const query = args.slice(1).join(' ')
+      if (!query) { console.log('Usage: clove memory recall <query>'); return }
+      const result = await api<{ result: string }>(cfg.apiPort, '/api/memory/recall', 'POST', { query })
+      console.log(result?.result || c.dim('(no memories found)'))
+      break
+    }
+    case 'stats': {
+      const agent = args[1] || ''
+      const url = agent ? `/api/memory/stats?agent=${encodeURIComponent(agent)}` : '/api/memory/stats'
+      const result = await api<{ total: number; episodic: number; semantic: number; procedural: number }>(cfg.apiPort, url)
+      if (!result) { console.log(c.dim('No stats available')); return }
+      console.log('')
+      console.log(c.bold('  Memory stats') + (agent ? c.dim(` (${agent})`) : ''))
+      console.log(`  EPISODIC   : ${result.episodic}`)
+      console.log(`  SEMANTIC   : ${result.semantic}`)
+      console.log(`  PROCEDURAL : ${result.procedural}`)
+      console.log(`  Total      : ${result.total}`)
+      console.log('')
+      break
+    }
+    default:
+      console.log('Usage: clove memory [list|recall|stats] [agent] [query]')
   }
 }
 
@@ -483,7 +554,7 @@ async function cmdDeploy(name: string, cliArgs: string[]): Promise<void> {
   console.log(c.cyan(`Deploying: ${meta.displayName || name}`))
   console.log(c.dim(`  ${goal.slice(0, 80)}`)); console.log('')
   if (spec.mode === 'fleet') await cmdFleet(goal, (spec.agents as number) || 3, budget)
-  else await cmdRun(goal, budget)
+  else await cmdRun(goal, { budget })
 }
 
 // ── Scheduler ──────────────────────────────────────────────────────────
@@ -1366,6 +1437,117 @@ async function cmdStore(args: string[]): Promise<void> {
   }
 }
 
+// ── Jobs commands ────────────────────────────────────────────────────────
+
+async function cmdJobs(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const ws = args.find(a => a.startsWith('--workspace='))?.split('=')[1] || ''
+      const status = args.find(a => a.startsWith('--status='))?.split('=')[1] || ''
+      const query = [ws ? `workspace_id=${ws}` : '', status ? `status=${status}` : ''].filter(Boolean).join('&')
+      const result = await api<{ jobs: any[]; count: number; queued: number; running: number }>(cfg.apiPort, `/api/jobs${query ? '?' + query : ''}`)
+      if (!result) { console.log(c.red('Failed')); return }
+      console.log('')
+      console.log(c.bold(`  Jobs`) + c.dim(`  queued:${result.queued} running:${result.running} total:${result.count}`))
+      console.log(c.dim('  ' + '─'.repeat(70)))
+      for (const j of (result.jobs || [])) {
+        const st = j.status === 'completed' ? c.green(j.status.padEnd(10))
+                 : j.status === 'failed'    ? c.red(j.status.padEnd(10))
+                 : j.status === 'running'   ? c.cyan(j.status.padEnd(10))
+                 : c.dim(j.status.padEnd(10))
+        const cost = `$${(j.cost_usd ?? 0).toFixed(4)}`
+        console.log(`  ${c.dim(j.id.slice(0,8))} ${st} ${c.yellow((j.agent_name || '').padEnd(16))} ${c.dim(j.goal.slice(0,45).padEnd(46))} ${c.dim(cost)} ${c.dim(`${j.steps_done}s`)}`)
+      }
+      console.log('')
+      break
+    }
+    case 'get':
+    case 'show': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs get <job-id>'); return }
+      const j = await api<any>(cfg.apiPort, `/api/jobs/${id}`)
+      if (!j) { console.log(c.dim('Job not found')); return }
+      console.log('')
+      console.log(c.bold(`  Job: ${j.id}`))
+      console.log(`  Status:  ${j.status}`)
+      console.log(`  Agent:   ${j.agent_name}`)
+      console.log(`  Goal:    ${j.goal}`)
+      console.log(`  Model:   ${j.model}`)
+      console.log(`  Steps:   ${j.steps_done} / ${j.max_steps}`)
+      console.log(`  Tokens:  ${j.tokens ?? 0}`)
+      console.log(`  Cost:    $${(j.cost_usd ?? 0).toFixed(6)}`)
+      if (j.error) console.log(`  Error:   ${c.red(j.error)}`)
+      if (j.result) console.log(`\n  Result:\n  ${j.result.slice(0, 400)}`)
+      console.log('')
+      break
+    }
+    case 'submit':
+    case 'run': {
+      const goal = args.slice(1).filter(a => !a.startsWith('-')).join(' ')
+      if (!goal) { console.log('Usage: clove jobs run "goal" [--model M] [--budget N] [--steps N] [--agent NAME] [--workspace WS]'); return }
+      const modelIdx = args.indexOf('--model');   const model    = modelIdx >= 0 ? args[modelIdx+1] : ''
+      const budgetIdx = args.indexOf('--budget');  const budget   = budgetIdx >= 0 ? parseFloat(args[budgetIdx+1]) : 0.5
+      const stepsIdx = args.indexOf('--steps');   const steps    = stepsIdx >= 0 ? parseInt(args[stepsIdx+1]) : 20
+      const agentIdx = args.indexOf('--agent');   const agent    = agentIdx >= 0 ? args[agentIdx+1] : 'agent'
+      const wsIdx    = args.indexOf('--workspace'); const ws      = wsIdx >= 0 ? args[wsIdx+1] : ''
+      const noMem    = args.includes('--no-memory')
+      const noComp   = args.includes('--no-compress')
+
+      const res = await api<{ id: string; status: string }>(cfg.apiPort, '/api/jobs', 'POST', {
+        goal, agent_name: agent, model, budget_usd: budget, max_steps: steps,
+        workspace_id: ws, compress_context: !noComp, use_memory: !noMem,
+      })
+      if (res?.id) {
+        console.log(c.green(`Submitted: ${res.id}`))
+        console.log(c.dim(`  Watch with: clove jobs get ${res.id}`))
+      } else {
+        console.log(c.red('Failed to submit job'))
+      }
+      break
+    }
+    case 'cancel': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs cancel <job-id>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/jobs/${id}/cancel`, 'POST')
+      console.log(res?.success ? c.green('Cancelled') : c.red('Failed'))
+      break
+    }
+    case 'retry': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs retry <job-id>'); return }
+      const res = await api<{ id: string }>(cfg.apiPort, `/api/jobs/${id}/retry`, 'POST')
+      if (res?.id) console.log(c.green(`Retried as: ${res.id}`))
+      else console.log(c.red('Failed'))
+      break
+    }
+    case 'watch': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs watch <job-id>'); return }
+      console.log(c.dim(`Watching ${id}... (Ctrl+C to stop)`))
+      const poll = setInterval(async () => {
+        const j = await api<any>(cfg.apiPort, `/api/jobs/${id}`)
+        if (!j) return
+        process.stdout.write(`\r  ${j.status.padEnd(10)} steps=${j.steps_done} cost=$${(j.cost_usd??0).toFixed(4)}  `)
+        if (['completed','failed','cancelled'].includes(j.status)) {
+          clearInterval(poll)
+          console.log('')
+          if (j.result) console.log('\n' + j.result.slice(0, 400))
+          if (j.error)  console.log(c.red('\nError: ' + j.error))
+        }
+      }, 1500)
+      break
+    }
+    default:
+      console.log('Usage: clove jobs [list|get|run|cancel|retry|watch] ...')
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
@@ -1384,11 +1566,15 @@ switch (cmd) {
     break
   case 'run':
   case 'r': {
-    const goal = args.slice(1).filter(a => !a.startsWith('-')).join(' ')
-    const budgetIdx = args.indexOf('--budget')
-    const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 0.50
-    if (!goal) { console.log('Usage: clove run "your goal" [--budget 0.50]'); break }
-    cmdRun(goal, budget)
+    const goal = args.slice(1).filter(a => !a.startsWith('-') && !a.startsWith('--')).join(' ')
+    const budgetIdx  = args.indexOf('--budget');  const budget  = budgetIdx  >= 0 ? parseFloat(args[budgetIdx+1])  : 0.50
+    const modelIdx   = args.indexOf('--model');   const model   = modelIdx   >= 0 ? args[modelIdx+1]   : ''
+    const stepsIdx   = args.indexOf('--steps');   const steps   = stepsIdx   >= 0 ? parseInt(args[stepsIdx+1])    : 20
+    const agentIdx   = args.indexOf('--agent');   const agent   = agentIdx   >= 0 ? args[agentIdx+1]   : ''
+    const noMemory   = args.includes('--no-memory')
+    const noCompress = args.includes('--no-compress')
+    if (!goal) { console.log('Usage: clove run "goal" [--budget N] [--model M] [--steps N] [--agent NAME] [--no-memory] [--no-compress]'); break }
+    cmdRun(goal, { budget, model, steps, agent, compress: !noCompress, memory: !noMemory })
     break
   }
   case 'fleet':
@@ -1454,9 +1640,17 @@ switch (cmd) {
   case 'scan':
     cmdAnalyze(args[1] || '.')
     break
-  case 'recall':
   case 'memory':
-    cmdRecall()
+  case 'mem':
+    cmdMemory(args.slice(1))
+    break
+  case 'recall':
+    cmdMemory(['recall', ...args.slice(1)])
+    break
+  case 'jobs':
+  case 'job':
+  case 'j':
+    cmdJobs(args.slice(1))
     break
   case 'logs':
   case 'audit': {
@@ -1500,7 +1694,7 @@ switch (cmd) {
   case '--help':
   case '-h':
     console.log(`
-${c.bold('CLOVE')} — AI Agent Fleet OS  ${c.dim('v0.1.0')}
+${c.bold('CLOVE')} — AI Agent Fleet OS  ${c.dim('v0.3.0')}
 
 ${c.bold('Usage:')} clove <command> [options]
 
@@ -1524,11 +1718,13 @@ ${c.bold('Build:')}
   ${c.cyan('templates')}                                  Browse & deploy templates
 
 ${c.bold('Operate:')}
-  ${c.cyan('run')} "goal" [--budget N] [--model M]        Single agent run
-  ${c.cyan('fleet')} "goal" [-n N] [--world W]            Parallel fleet run
-  ${c.cyan('daemon')} start|stop|list|logs|dream|status   Always-on agents
-  ${c.cyan('runtime')} list|run <runtime> "goal"          Spawn Claude Code/Codex
-  ${c.cyan('world')} list|create|launch                   Workspace management
+  ${c.cyan('run')} "goal" [--budget N] [--model M] [--steps N]  Single agent run
+    ${c.dim('[--agent NAME] [--no-memory] [--no-compress]')}
+  ${c.cyan('fleet')} "goal" [-n N] [--world W]                Parallel fleet run
+  ${c.cyan('jobs')} list|get|run|cancel|retry|watch            Job queue (async pipelines)
+  ${c.cyan('daemon')} start|stop|list|logs|dream|status        Always-on agents
+  ${c.cyan('runtime')} list|run <runtime> "goal"               Spawn Claude Code/Codex
+  ${c.cyan('world')} list|create|launch                        Workspace management
 
 ${c.bold('Configure:')}
   ${c.cyan('provider')} set|list|remove <name> [key]      LLM API keys
@@ -1538,7 +1734,7 @@ ${c.bold('Configure:')}
 
 ${c.bold('Observe:')}
   ${c.cyan('logs')} [N]                                   Recent audit entries
-  ${c.cyan('recall')}                                     Agent memory blocks
+  ${c.cyan('memory')} list|recall|stats [agent] [query]   Three-tier agent memory
   ${c.cyan('store')} get|set <key> [value]                Key-value store
   ${c.cyan('policy')}                                     Policy recommendations
   ${c.cyan('privacy')} <text>                             PII scan
