@@ -2268,7 +2268,9 @@ void ApiServer::setup_routes() {
             job.max_steps    = body.value("max_steps", 20);
             job.priority     = body.value("priority", 0);
             job.workspace_id = body.value("workspace_id", "");
-            job.depends_on   = body.value("depends_on", "");
+            job.depends_on        = body.value("depends_on", "");
+            job.compress_context  = body.value("compress_context", true);
+            job.use_memory        = body.value("use_memory", true);
             if (body.contains("tools") && body["tools"].is_array())
                 job.allowed_tools = body["tools"].get<std::vector<std::string>>();
             if (body.contains("allowed_tools") && body["allowed_tools"].is_array())

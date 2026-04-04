@@ -46,6 +46,8 @@ struct Job {
 
     std::string depends_on;   // job_id that must complete before this one starts
     std::string submitted_at; // ISO timestamp, set on submit
+    bool compress_context = true; // StepCompressor on/off
+    bool use_memory       = true; // Three-tier MemoryManager on/off
 
     // Runtime state (not submitted by caller)
     std::string status;       // queued|running|completed|failed|cancelled

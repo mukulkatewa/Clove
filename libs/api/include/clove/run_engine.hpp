@@ -43,6 +43,8 @@ struct RunConfig {
     int current_depth = 0;       // Current nesting level (0 = top-level)
     std::string workspace_id;    // If set, output is scoped to this workspace
     std::string run_id;          // Unique run identifier; auto-generated if empty
+    bool compress_context = true; // Run StepCompressor on tool outputs before context injection
+    bool use_memory       = true; // Use three-tier MemoryManager (remember/recall tools)
 };
 
 /// Result of a completed run.

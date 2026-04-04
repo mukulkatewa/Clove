@@ -1,52 +1,80 @@
 #!/usr/bin/env node
 /**
- * benchmark_memory.mjs — CLOVE memory system benchmarks
+ * benchmark_memory.mjs — CLOVE memory + compression A/B benchmark
  *
- * Measures two marketing metrics:
- *   CPR  (Cost Per Run)           — tokens_consumed / jobs_completed
- *   LTCR (Long-Run Task Completion Rate) — jobs_completed / jobs_started
+ * Runs 4 modes against the same hard task set and compares:
+ *   baseline      — compress_context=false, use_memory=false
+ *   memory-only   — compress_context=false, use_memory=true
+ *   compress-only — compress_context=true,  use_memory=false
+ *   full          — compress_context=true,  use_memory=true  ← production
+ *
+ * Metrics:
+ *   CPR  — tokens consumed per completed run (lower = cheaper)
+ *   LTCR — % of jobs that completed within max_steps (higher = more reliable)
  *
  * Usage:
  *   source .env.kernel
- *   node tools/benchmark_memory.mjs [--steps 20|50|100|200] [--runs 10] [--workspace <id>]
- *
- * Requires kernel running on localhost:8080.
+ *   node tools/benchmark_memory.mjs [--steps 20] [--runs 5] [--mode all|baseline|full]
  */
 
-const BASE = process.env.KERNEL_URL || "http://localhost:8080";
+const BASE     = process.env.KERNEL_URL || "http://localhost:8080";
+const MODEL    = process.env.BENCH_MODEL || "openai/gpt-4o-mini";
+const TIMEOUT  = parseInt(process.env.BENCH_TIMEOUT || "180000", 10);  // 3 min per job
 
-// ── CLI args ────────────────────────────────────────────────────────────────
-const args = process.argv.slice(2);
-const getArg = (flag, def) => {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : def;
-};
+const args    = process.argv.slice(2);
+const getArg  = (f, d) => { const i = args.indexOf(f); return i >= 0 ? args[i+1] : d; };
 const MAX_STEPS = parseInt(getArg("--steps", "20"), 10);
-const NUM_RUNS  = parseInt(getArg("--runs",  "10"),  10);
-const WORKSPACE = getArg("--workspace", "bench-ws");
+const NUM_RUNS  = parseInt(getArg("--runs",  "3"),  10);
+const RUN_MODE  = getArg("--mode", "all");
 
-// ── Benchmark tasks — varied complexity ──────────────────────────────────────
-const TASKS = [
-  "List all files in the current directory and count them.",
-  "Remember the fact: the sky is blue. Then recall: what color is the sky?",
-  "Search for 'CLOVE kernel architecture' and summarize the top result.",
-  "Write a file called /tmp/bench_test.txt with content 'hello world', then read it back.",
-  "What is 2 + 2? Use the exec tool to run: echo $((2 + 2))",
+// ── Hard tasks — these actually stress tool outputs and context window ────────
+// Each task forces multiple tool calls with large-ish output.
+const HARD_TASKS = [
+  {
+    name: "codebase-scan",
+    goal: `Read the file /Users/anixd/Documents/clove-v2/libs/api/src/run_engine.cpp. ` +
+          `Count the total number of lines. List every function definition you find (lines starting with a return type and function name). ` +
+          `Then write a summary to /tmp/bench_codescan.txt with: total line count, function count, and function names.`,
+    tools: ["read_file", "write_file", "remember", "recall"],
+  },
+  {
+    name: "cross-reference",
+    goal: `Read /Users/anixd/Documents/clove-v2/libs/api/src/api_server.cpp and find every line that constructs a RunEngine object. ` +
+          `Then read /Users/anixd/Documents/clove-v2/libs/api/include/clove/run_engine.hpp and find the RunEngine constructor signature. ` +
+          `Write a report to /tmp/bench_crossref.txt listing: how many RunEngine constructions exist, and whether any are missing the memory_mgr parameter.`,
+    tools: ["read_file", "write_file", "remember", "recall"],
+  },
+  {
+    name: "git-analysis",
+    goal: `Run: git -C /Users/anixd/Documents/clove-v2 log --oneline -20 ` +
+          `to get the last 20 commits. Group them into categories: feat, fix, refactor, other. ` +
+          `Count commits per category. Write the result to /tmp/bench_gitlog.txt. Then read it back and confirm it was written.`,
+    tools: ["exec", "read_file", "write_file", "remember", "recall"],
+  },
 ];
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-async function submitJob(goal, workspaceId) {
+// ── 4 benchmark modes ─────────────────────────────────────────────────────────
+const MODES = [
+  { name: "baseline",      compress_context: false, use_memory: false },
+  { name: "memory-only",   compress_context: false, use_memory: true  },
+  { name: "compress-only", compress_context: true,  use_memory: false },
+  { name: "full",          compress_context: true,  use_memory: true  },
+].filter(m => RUN_MODE === "all" || m.name === RUN_MODE);
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+async function submitJob(task, mode) {
   const res = await fetch(`${BASE}/api/jobs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      goal,
-      agent_name: "bench-agent",
-      workspace_id: workspaceId,
-      model: "openai/gpt-4o-mini",
-      budget_usd: 0.10,
+      goal: task.goal,
+      agent_name: `bench-${mode.name}`,
+      model: MODEL,
+      budget_usd: 0.25,
       max_steps: MAX_STEPS,
-      allowed_tools: ["read_file", "write_file", "exec", "search", "remember", "recall"],
+      allowed_tools: task.tools,
+      compress_context: mode.compress_context,
+      use_memory: mode.use_memory,
     }),
   });
   if (!res.ok) throw new Error(`submit failed: ${res.status} ${await res.text()}`);
@@ -54,113 +82,118 @@ async function submitJob(goal, workspaceId) {
   return body.id || body.job_id;
 }
 
-async function pollJob(jobId, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
+async function pollJob(jobId) {
+  const deadline = Date.now() + TIMEOUT;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 2000));
-    const res = await fetch(`${BASE}/api/jobs/${jobId}`);
-    if (!res.ok) continue;
-    const job = await res.json();
-    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
-      return job;
-    }
-  }
-  return null; // timed out
-}
-
-async function ensureWorkspace(name) {
-  // Try to find existing world/workspace
-  const list = await fetch(`${BASE}/api/worlds`);
-  if (list.ok) {
-    const ws = await list.json();
-    const arr = Array.isArray(ws) ? ws : (ws.worlds || ws.workspaces || []);
-    const found = arr.find(w => w.name === name || w.id === name);
-    if (found) return found.id;
-  }
-  // No workspace needed — jobs run without one
-  return "";
-}
-
-// ── Run benchmark ─────────────────────────────────────────────────────────────
-async function runBenchmark() {
-  console.log(`\n═══ CLOVE Memory Benchmark ═══`);
-  console.log(`  max_steps=${MAX_STEPS}  runs=${NUM_RUNS}  workspace=${WORKSPACE}`);
-  console.log(`  kernel=${BASE}\n`);
-
-  const workspaceId = await ensureWorkspace(WORKSPACE);
-
-  let jobsStarted = 0;
-  let jobsCompleted = 0;
-  let totalTokens = 0;
-  let totalCostUsd = 0;
-  const results = [];
-
-  for (let i = 0; i < NUM_RUNS; i++) {
-    const task = TASKS[i % TASKS.length];
-    console.log(`[${i + 1}/${NUM_RUNS}] Submitting: "${task.slice(0, 60)}…"`);
-
-    let jobId;
+    await new Promise(r => setTimeout(r, 2500));
     try {
-      jobId = await submitJob(task, workspaceId);
-      jobsStarted++;
-    } catch (e) {
-      console.error(`  ✗ Submit failed: ${e.message}`);
-      continue;
-    }
+      const res = await fetch(`${BASE}/api/jobs/${jobId}`);
+      if (!res.ok) continue;
+      const job = await res.json();
+      if (["completed","failed","cancelled"].includes(job.status)) return job;
+    } catch {}
+  }
+  return null;
+}
+
+function pad(s, n) { return String(s).padStart(n); }
+function pct(a, b) { return b > 0 ? ((a/b)*100).toFixed(1)+"%" : "N/A"; }
+
+// ── Run one mode ──────────────────────────────────────────────────────────────
+async function runMode(mode) {
+  const runs = [];
+  for (let r = 0; r < NUM_RUNS; r++) {
+    const task = HARD_TASKS[r % HARD_TASKS.length];
+    let jobId;
+    try { jobId = await submitJob(task, mode); }
+    catch (e) { runs.push({ ok: false, tokens: 0, cost: 0, steps: 0, error: e.message }); continue; }
 
     const job = await pollJob(jobId);
-    if (!job) {
-      console.warn(`  ⏱ Timed out: job ${jobId}`);
-      continue;
-    }
+    if (!job) { runs.push({ ok: false, tokens: 0, cost: 0, steps: 0, error: "timeout" }); continue; }
 
-    const tokens = job.tokens || 0;
-    const cost   = job.cost_usd || 0;
-    const steps  = job.steps_done || 0;
-    const ok     = job.status === "completed";
+    runs.push({
+      ok: job.status === "completed",
+      tokens: job.tokens || 0,
+      cost: job.cost_usd || 0,
+      steps: job.steps_done || 0,
+      task: task.name,
+      error: job.error || "",
+      result_preview: String(job.result || "").slice(0, 80),
+    });
 
-    if (ok) jobsCompleted++;
-    totalTokens   += tokens;
-    totalCostUsd  += cost;
-
-    results.push({ jobId, status: job.status, tokens, cost, steps, task: task.slice(0, 50) });
-
-    const icon = ok ? "✓" : "✗";
-    console.log(`  ${icon} status=${job.status}  steps=${steps}  tokens=${tokens}  cost=$${cost.toFixed(4)}`);
+    const icon = job.status === "completed" ? "✓" : "✗";
+    console.log(`    ${icon} [${task.name}] steps=${job.steps_done} tokens=${job.tokens||0} cost=$${(job.cost_usd||0).toFixed(4)} ${job.status==="failed"?"ERR:"+job.error.slice(0,50):""}`);
   }
 
-  // ── Metrics ────────────────────────────────────────────────────────────────
-  const CPR  = jobsCompleted > 0 ? (totalTokens / jobsCompleted).toFixed(0) : "N/A";
-  const LTCR = jobsStarted   > 0 ? ((jobsCompleted / jobsStarted) * 100).toFixed(1) : "N/A";
+  const completed   = runs.filter(r => r.ok).length;
+  const totalTokens = runs.reduce((s, r) => s + r.tokens, 0);
+  const totalCost   = runs.reduce((s, r) => s + r.cost,   0);
+  const CPR         = completed > 0 ? Math.round(totalTokens / completed) : null;
+  const LTCR        = runs.length  > 0 ? (completed / runs.length) * 100  : 0;
 
-  console.log(`\n── Results ──────────────────────────────────`);
-  console.log(`  Jobs started:    ${jobsStarted}`);
-  console.log(`  Jobs completed:  ${jobsCompleted}`);
-  console.log(`  Total tokens:    ${totalTokens}`);
-  console.log(`  Total cost:      $${totalCostUsd.toFixed(4)}`);
-  console.log(`\n  📊 CPR  (tokens / completed run): ${CPR} tokens/run`);
-  console.log(`  📊 LTCR (completion rate @${MAX_STEPS} steps): ${LTCR}%`);
-  console.log(`─────────────────────────────────────────────\n`);
-
-  // ── JSON summary ───────────────────────────────────────────────────────────
-  const summary = {
-    timestamp: new Date().toISOString(),
-    config: { max_steps: MAX_STEPS, num_runs: NUM_RUNS, workspace: WORKSPACE },
-    metrics: {
-      CPR:  CPR === "N/A" ? null : parseInt(CPR),
-      LTCR: LTCR === "N/A" ? null : parseFloat(LTCR),
-    },
-    totals: { jobs_started: jobsStarted, jobs_completed: jobsCompleted, tokens: totalTokens, cost_usd: totalCostUsd },
-    runs: results,
-  };
-  const outFile = `bench_results_${MAX_STEPS}steps_${Date.now()}.json`;
-  try {
-    const fs = await import("fs");
-    fs.writeFileSync(outFile, JSON.stringify(summary, null, 2));
-    console.log(`  Results written to: ${outFile}`);
-  } catch {}
-
-  return summary;
+  return { mode: mode.name, completed, total: runs.length, totalTokens, totalCost, CPR, LTCR, runs };
 }
 
-runBenchmark().catch(e => { console.error(e); process.exit(1); });
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function main() {
+  console.log(`\n${"═".repeat(60)}`);
+  console.log(` CLOVE Memory Benchmark  —  A/B comparison`);
+  console.log(`${"═".repeat(60)}`);
+  console.log(` model=${MODEL}  max_steps=${MAX_STEPS}  runs_per_mode=${NUM_RUNS}`);
+  console.log(` modes: ${MODES.map(m=>m.name).join(", ")}`);
+  console.log(`${"─".repeat(60)}\n`);
+
+  const health = await fetch(`${BASE}/api/health`).then(r=>r.json()).catch(()=>null);
+  if (!health || health.status !== "ok") {
+    console.error("Kernel not reachable at", BASE); process.exit(1);
+  }
+
+  const results = [];
+
+  for (const mode of MODES) {
+    console.log(`\n▶ Mode: ${mode.name.toUpperCase()} (compress=${mode.compress_context} memory=${mode.use_memory})`);
+    const r = await runMode(mode);
+    results.push(r);
+  }
+
+  // ── Comparison table ────────────────────────────────────────────────────────
+  const baseline = results.find(r => r.mode === "baseline");
+  const full     = results.find(r => r.mode === "full");
+
+  console.log(`\n${"═".repeat(60)}`);
+  console.log(` Results`);
+  console.log(`${"═".repeat(60)}`);
+  console.log(` ${"Mode".padEnd(16)} ${"CPR (tok/run)".padStart(14)} ${"LTCR".padStart(8)} ${"Cost/run".padStart(10)} ${"Delta CPR".padStart(10)}`);
+  console.log(` ${"─".repeat(58)}`);
+
+  for (const r of results) {
+    const cpr_str  = r.CPR !== null ? r.CPR.toLocaleString() : "N/A";
+    const ltcr_str = pct(r.completed, r.total);
+    const cost_str = r.total > 0 ? "$"+(r.totalCost/r.total).toFixed(4) : "N/A";
+    let delta = "";
+    if (baseline && r.mode !== "baseline" && r.CPR !== null && baseline.CPR !== null) {
+      const d = ((r.CPR - baseline.CPR) / baseline.CPR) * 100;
+      delta = (d < 0 ? "▼" : "▲") + Math.abs(d).toFixed(1) + "%";
+    }
+    console.log(` ${r.mode.padEnd(16)} ${cpr_str.padStart(14)} ${ltcr_str.padStart(8)} ${cost_str.padStart(10)} ${delta.padStart(10)}`);
+  }
+
+  if (baseline && full && baseline.CPR && full.CPR) {
+    const cpr_delta  = ((full.CPR - baseline.CPR) / baseline.CPR * 100).toFixed(1);
+    const ltcr_delta = (full.LTCR - baseline.LTCR).toFixed(1);
+    console.log(`\n${"─".repeat(60)}`);
+    console.log(` Full vs Baseline:`);
+    console.log(`   CPR  : ${cpr_delta < 0 ? "▼" : "▲"} ${Math.abs(cpr_delta)}% tokens per run`);
+    console.log(`   LTCR : ${ltcr_delta >= 0 ? "+" : ""}${ltcr_delta}pp completion rate`);
+    console.log(`   Cost : -$${((baseline.totalCost - full.totalCost) / (baseline.total||1)).toFixed(5)} per run saved`);
+  }
+  console.log(`${"═".repeat(60)}\n`);
+
+  // Write JSON
+  const outFile = `bench_ab_${MAX_STEPS}steps_${Date.now()}.json`;
+  const { writeFileSync } = await import("fs");
+  writeFileSync(outFile, JSON.stringify({ timestamp: new Date().toISOString(), config: { model: MODEL, max_steps: MAX_STEPS, runs_per_mode: NUM_RUNS }, results }, null, 2));
+  console.log(` Results written to: ${outFile}\n`);
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

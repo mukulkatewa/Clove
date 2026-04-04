@@ -330,7 +330,7 @@ std::string RunEngine::tool_mcp_call(
 
 std::string RunEngine::tool_remember(const std::string& fact) {
     // ── Three-tier memory (primary path) ──
-    if (memory_mgr_ && active_cfg_) {
+    if (memory_mgr_ && active_cfg_ && active_cfg_->use_memory) {
         return memory_mgr_->remember(
             active_cfg_->agent_name,
             active_cfg_->workspace_id,
@@ -365,7 +365,7 @@ std::string RunEngine::tool_remember(const std::string& fact) {
 
 std::string RunEngine::tool_recall(const std::string& query) {
     // ── Three-tier memory (primary path) ──
-    if (memory_mgr_ && active_cfg_) {
+    if (memory_mgr_ && active_cfg_ && active_cfg_->use_memory) {
         return memory_mgr_->recall(
             active_cfg_->agent_name,
             active_cfg_->workspace_id,
@@ -1002,7 +1002,9 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             messages.push_back({
                 {"role", "tool"},
                 {"tool_call_id", tool_id},
-                {"content", StepCompressor::compress(tool_name, tool_result)}
+                {"content", cfg.compress_context
+                    ? StepCompressor::compress(tool_name, tool_result)
+                    : tool_result}
             });
         }
     }
@@ -1183,7 +1185,9 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
                     messages.push_back({
                         {"role", "tool"}, {"tool_call_id", tool_id},
-                        {"content", StepCompressor::compress(tool_name, tool_result)}
+                        {"content", cfg.compress_context
+                            ? StepCompressor::compress(tool_name, tool_result)
+                            : tool_result}
                     });
                 }
             }
@@ -1197,7 +1201,7 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     }
 
     // Post-run memory consolidation: EPISODIC → SEMANTIC
-    if (memory_mgr_ && !cfg.run_id.empty()) {
+    if (memory_mgr_ && cfg.use_memory && !cfg.run_id.empty()) {
         memory_mgr_->consolidate(cfg.agent_name, cfg.run_id);
     }
 

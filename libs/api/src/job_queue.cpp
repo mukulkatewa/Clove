@@ -262,8 +262,10 @@ void JobQueue::execute_job(Job& job) {
     cfg.max_steps     = job.max_steps;
     cfg.allowed_tools = job.allowed_tools;
     cfg.agent_name    = job.agent_name.empty() ? "agent" : job.agent_name;
-    cfg.workspace_id  = job.workspace_id;
-    cfg.run_id        = job.id;
+    cfg.workspace_id      = job.workspace_id;
+    cfg.run_id            = job.id;
+    cfg.compress_context  = job.compress_context;
+    cfg.use_memory        = job.use_memory;
 
     RunEngine engine(
         deps_.openrouter, deps_.anthropic, deps_.inference, deps_.privacy,
