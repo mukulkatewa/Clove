@@ -975,7 +975,16 @@ async function main() {
   if (PORT) {
     // HTTP mode — stateless per-request transport
     const httpServer = http.createServer(async (req, res) => {
-      // Auth check
+      const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+
+      // Health check — no auth required (Railway health checker, uptime monitors)
+      if (url.pathname === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, kernel: KERNEL_URL, version: "2.0.0" }));
+        return;
+      }
+
+      // Auth check for all other routes
       if (MCP_KEY) {
         const auth = req.headers["authorization"] ?? req.headers["x-api-key"] ?? "";
         const token = typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "") : "";
@@ -984,14 +993,6 @@ async function main() {
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
         }
-      }
-
-      const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
-
-      if (url.pathname === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, kernel: KERNEL_URL, version: "2.0.0" }));
-        return;
       }
 
       if (url.pathname === "/mcp") {

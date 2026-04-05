@@ -48,7 +48,9 @@ libs/integrations/          — McpBridge (stdio MCP protocol)
 | Var | Purpose |
 |-----|---------|
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Supabase cloud sync |
-| `ANTHROPIC_API_KEY` | Native Anthropic API (claude-opus-4-5 etc.) |
+| `ANTHROPIC_API_KEY` | Native Anthropic API (claude-sonnet-4, claude-opus-4, etc.) |
+| `OPENROUTER_API_KEY` | OpenRouter — 300+ models, enable with `--openrouter` flag |
+| `CLOVE_API_KEY` | REST API auth key (passed as `Authorization: Bearer`) |
 | `GITHUB_TOKEN` | Auto-registers GitHub MCP (26 tools) on boot |
 | `SLACK_BOT_TOKEN` | Auto-registers Slack MCP on boot |
 | `LINEAR_API_KEY` | Auto-registers Linear MCP on boot |
@@ -100,6 +102,20 @@ Dashboard: https://supabase.com/dashboard/project/pzldqapdbiszeumueyzh/editor
 ## SQLite DB
 
 `~/.clove/clove.db` — local cache, source of truth when Supabase is offline.
+
+## Deployment
+
+```bash
+# Docker Compose (kernel + MCP server wired together)
+cd deploy && docker-compose up
+
+# Railway — two services:
+#   Kernel:     railway.toml at repo root → deploy/Dockerfile
+#   MCP server: mcp-server/railway.json  → mcp-server/Dockerfile
+#
+# Kernel env vars for Railway: OPENROUTER_API_KEY, ANTHROPIC_API_KEY, CLOVE_API_KEY
+# MCP env vars for Railway:    PORT=3001, CLOVE_API_URL=<kernel-internal>, CLOVE_MCP_KEY
+```
 
 ## Tools directory
 

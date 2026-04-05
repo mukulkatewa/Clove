@@ -15,4 +15,4 @@ COPY --from=builder /build/build/cli/clove_cli /usr/local/bin/clove
 EXPOSE 8080 8081
 VOLUME ["/data"]
 ENTRYPOINT ["clove_kernel"]
-CMD ["--socket", "/tmp/clove.sock", "--db", "/data/clove.db", "--api", "--api-port", "8080"]
+CMD ["--socket", "/tmp/clove.sock", "--db", "/data/clove.db", "--api", "--api-port", "8080", "--openrouter", "--mcp", "--a2a"]

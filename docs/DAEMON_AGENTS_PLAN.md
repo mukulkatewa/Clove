@@ -1,7 +1,7 @@
 # CLOVE Daemon Agents — Always-On Agent Architecture
 
 > Inspired by Anthropic's KAIROS. Built to be runtime-agnostic, scalable, and observable.
-> Status: Planning → Ready to build
+> Status: **Implemented** — tick loop, memory consolidation, subscriptions, and API endpoints all live in v2
 
 ---
 

@@ -6,7 +6,7 @@
 **Libraries:** 14 modular static libraries + 2 binaries (kernel, CLI)
 **Syscalls:** 86 opcodes over binary IPC protocol
 **Tests:** 165 (Catch2)
-**REST API:** 71 endpoints including agent runner, fleet, SSE streaming
+**REST API:** 65 endpoints including agent runner, fleet, SSE streaming
 
 ---
 
@@ -311,7 +311,7 @@
 
 ## 12. REST API
 
-### 24 Endpoints
+### Key Endpoints (65 total)
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/health` | Status, version, uptime (no auth required) |

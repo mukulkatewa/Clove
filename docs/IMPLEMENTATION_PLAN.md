@@ -44,7 +44,7 @@ The manager doesn't choose between these. They say: "I need an agent that reads 
 |------|--------|
 | Kernel compiles, all 86 syscalls, 165 tests passing | Done |
 | RunEngine with 10 real tools (file, exec, HTTP, search, MCP, memory) | Done |
-| 71 REST API endpoints (think, run, stream, fleet, history, audit, cost, memory) | Done |
+| 65 REST API endpoints (think, run, stream, fleet, history, audit, cost, memory, jobs, daemons) | Done |
 | Permission checks on all RunEngine tools (read/write/exec/http) | Done |
 | Context assembly wired into RunEngine | Done |
 | PII filtering on every LLM call | Done |

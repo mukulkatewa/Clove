@@ -197,6 +197,41 @@ Sandboxed chat agent instances.
 | `clove inference set model <id>` | Set default model |
 | `clove inference set max_cost <N>` | Set cost cap |
 
+### Swarms
+
+| Command | Description |
+|---------|-------------|
+| `clove swarm list` | List all swarms |
+| `clove swarm create <name> --goal "..." --budget N` | Create a swarm |
+| `clove swarm start <name>` | Start / run a swarm |
+| `clove swarm delete <name>` | Delete a swarm |
+
+### Schedules
+
+| Command | Description |
+|---------|-------------|
+| `clove schedule list` | List all cron schedules |
+| `clove schedule create <name> "<cron>" --goal "..."` | Create schedule |
+| `clove schedule delete <name>` | Remove schedule |
+
+### Webhooks
+
+| Command | Description |
+|---------|-------------|
+| `clove webhook list` | List registered webhooks |
+| `clove webhook create <url> --events run_complete,agent_error` | Register webhook |
+| `clove webhook delete <id>` | Remove webhook (id starts with `wh_`) |
+
+### Jobs (Async)
+
+| Command | Description |
+|---------|-------------|
+| `clove jobs list` | List all jobs (filter by status) |
+| `clove jobs show <id>` | Job detail + step log |
+| `clove jobs submit <goal>` | Submit async job |
+| `clove jobs cancel <id>` | Cancel queued job |
+| `clove jobs retry <id>` | Re-queue failed job |
+
 ### Other
 
 | Command | Description |
@@ -206,7 +241,7 @@ Sandboxed chat agent instances.
 | `clove deploy <template>` | Deploy a template |
 | `clove analyze [path]` | AI-powered project analysis |
 | `clove scheduler` | Run scheduler daemon |
-| `clove build` | Build kernel from source |
+| `clove build` | Build mcp-server TypeScript (`npm run build` in mcp-server/) |
 
 ## Environment Variables
 
@@ -244,7 +279,7 @@ Stored at `~/.clove/config.json`:
 ├── agents/               # User-created agent templates
 │   └── <name>/
 │       └── agent.yaml
-└── daemons/              # Daemon logs (future)
+└── daemons/              # Daemon logs
     └── <name>/
         └── logs/
 ```

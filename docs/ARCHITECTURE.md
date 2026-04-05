@@ -1,6 +1,6 @@
 # CLOVE v2 — Architecture
 
-> 86 syscalls | 14 libraries | 22 syscall modules | C++23
+> 86 syscalls | 14 libraries | 65 API endpoints | C++23
 
 ---
 

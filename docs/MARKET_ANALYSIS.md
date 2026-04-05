@@ -15,7 +15,7 @@ A C++23 microkernel runtime that runs AI agent processes with:
 - Multi-agent orchestration (state store, event bus, mailboxes, 0.02ms IPC)
 - 300+ LLM models via OpenRouter (7 providers auto-detected)
 - PII filtering, cost controls, audit logging, execution replay
-- REST API (71 endpoints), CLI, Python SDK, TypeScript SDK, HTMX dashboard
+- REST API (65 endpoints), CLI, Python SDK, TypeScript SDK, HTMX dashboard
 - Built-in agent runner with tool-calling loop (POST /api/run)
 - Parallel fleet execution with SSE streaming (POST /api/fleet)
 - 165 tests, ~19.7K LOC C++

@@ -1548,6 +1548,179 @@ async function cmdJobs(args: string[]): Promise<void> {
   }
 }
 
+// ── Swarm commands ──────────────────────────────────────────────────────
+
+async function cmdSwarm(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ swarms?: any[] }>(cfg.apiPort, '/api/swarms')
+      const swarms = Array.isArray(result) ? result : (result?.swarms ?? [])
+      if (!swarms.length) { console.log(c.dim('  No swarms.')); return }
+      console.log('')
+      console.log(c.bold('  Swarms'))
+      console.log(c.dim('  ' + '─'.repeat(60)))
+      for (const s of swarms) {
+        const status = s.status === 'running' ? c.cyan(s.status) : c.dim(s.status ?? 'idle')
+        console.log(`  ${c.yellow((s.name ?? '').padEnd(20))} ${status.padEnd(12)} ${c.dim((s.goal ?? '').slice(0, 40))}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm create <name> [--goal "..."] [--budget N]'); return }
+      const goalIdx = args.indexOf('--goal'); const goal = goalIdx >= 0 ? args[goalIdx + 1] : ''
+      const budgetIdx = args.indexOf('--budget'); const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 2.0
+      const result = await api<any>(cfg.apiPort, '/api/swarms', 'POST', { name, goal, budget })
+      if (result?.name) {
+        console.log(c.green(`  Swarm created: ${result.name}`))
+      } else {
+        console.log(c.red('  Failed to create swarm'))
+      }
+      break
+    }
+    case 'start':
+    case 'run': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm start <name>'); return }
+      const result = await api<any>(cfg.apiPort, `/api/swarms/${name}/start`, 'POST', {})
+      if (result?.success || result?.started) {
+        console.log(c.green(`  Swarm started: ${name}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm delete <name>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/swarms/${name}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${name}`) : c.red('  Failed'))
+      break
+    }
+    default:
+      console.log('Usage: clove swarm [list|create|start|delete] ...')
+  }
+}
+
+// ── Schedule commands ────────────────────────────────────────────────────
+
+async function cmdSchedule(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ schedules: any[]; count: number }>(cfg.apiPort, '/api/schedules')
+      const schedules = result?.schedules ?? []
+      if (!schedules.length) { console.log(c.dim('  No schedules.')); return }
+      console.log('')
+      console.log(c.bold('  Schedules'))
+      console.log(c.dim('  ' + '─'.repeat(60)))
+      for (const s of schedules) {
+        const enabled = s.enabled ? c.green('enabled') : c.dim('disabled')
+        console.log(`  ${c.yellow((s.name ?? '').padEnd(20))} ${c.cyan((s.cron ?? '').padEnd(18))} ${enabled}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      // clove schedule create <name> <cron> --goal "..." [--budget N] [--model M]
+      const name = args[1]
+      const cron = args[2]
+      if (!name || !cron) { console.log('Usage: clove schedule create <name> "<cron>" --goal "..." [--budget N] [--model M]'); return }
+      const goalIdx = args.indexOf('--goal'); const goal = goalIdx >= 0 ? args[goalIdx + 1] : ''
+      const budgetIdx = args.indexOf('--budget'); const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 0.5
+      const modelIdx = args.indexOf('--model'); const model = modelIdx >= 0 ? args[modelIdx + 1] : ''
+      if (!goal) { console.log('--goal is required'); return }
+      const result = await api<any>(cfg.apiPort, '/api/schedules', 'POST', {
+        name, cron, run: { goal, budget_usd: budget, ...(model ? { model } : {}) }
+      })
+      if (result?.name) {
+        console.log(c.green(`  Schedule created: ${result.name}`))
+        console.log(c.dim(`  Cron: ${result.cron}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove schedule delete <name>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/schedules/${name}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${name}`) : c.red(`  Not found: ${name}`))
+      break
+    }
+    default:
+      console.log('Usage: clove schedule [list|create|delete] ...')
+  }
+}
+
+// ── Webhook commands ─────────────────────────────────────────────────────
+
+async function cmdWebhook(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ webhooks: any[]; count: number }>(cfg.apiPort, '/api/webhooks')
+      const webhooks = result?.webhooks ?? []
+      if (!webhooks.length) { console.log(c.dim('  No webhooks.')); return }
+      console.log('')
+      console.log(c.bold('  Webhooks'))
+      console.log(c.dim('  ' + '─'.repeat(70)))
+      for (const w of webhooks) {
+        const enabled = w.enabled ? c.green('enabled') : c.dim('disabled')
+        const events = (w.events ?? []).join(', ')
+        console.log(`  ${c.dim((w.id ?? '').padEnd(16))} ${enabled.padEnd(14)} ${c.yellow((w.url ?? '').slice(0, 35).padEnd(36))} ${c.dim(events)}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      // clove webhook create <url> [--events run_complete,agent_error]
+      const url = args[1]
+      if (!url) { console.log('Usage: clove webhook create <url> [--events run_complete,agent_error]'); return }
+      const eventsIdx = args.indexOf('--events')
+      const events = eventsIdx >= 0 ? args[eventsIdx + 1].split(',') : ['run_complete']
+      const result = await api<any>(cfg.apiPort, '/api/webhooks', 'POST', { url, events })
+      if (result?.id) {
+        console.log(c.green(`  Webhook created: ${result.id}`))
+        console.log(c.dim(`  URL: ${result.url}`))
+        console.log(c.dim(`  Events: ${(result.events ?? []).join(', ')}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove webhook delete <webhook-id>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/webhooks/${id}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${id}`) : c.red(`  Not found: ${id}`))
+      break
+    }
+    default:
+      console.log('Usage: clove webhook [list|create|delete] ...')
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
@@ -1675,6 +1848,15 @@ switch (cmd) {
   case 'runtime':
     cmdRuntime(args.slice(1))
     break
+  case 'swarm':
+    cmdSwarm(args.slice(1))
+    break
+  case 'schedule':
+    cmdSchedule(args.slice(1))
+    break
+  case 'webhook':
+    cmdWebhook(args.slice(1))
+    break
   case 'openclaw':
   case 'oc':
     cmdOpenclaw(args.slice(1))
@@ -1722,9 +1904,12 @@ ${c.bold('Operate:')}
     ${c.dim('[--agent NAME] [--no-memory] [--no-compress]')}
   ${c.cyan('fleet')} "goal" [-n N] [--world W]                Parallel fleet run
   ${c.cyan('jobs')} list|get|run|cancel|retry|watch            Job queue (async pipelines)
+  ${c.cyan('swarm')} list|create|start|delete                  Multi-agent swarms
   ${c.cyan('daemon')} start|stop|list|logs|dream|status        Always-on agents
   ${c.cyan('runtime')} list|run <runtime> "goal"               Spawn Claude Code/Codex
   ${c.cyan('world')} list|create|launch                        Workspace management
+  ${c.cyan('schedule')} list|create|delete                     Cron schedules
+  ${c.cyan('webhook')} list|create|delete                      Outbound webhooks
 
 ${c.bold('Configure:')}
   ${c.cyan('provider')} set|list|remove <name> [key]      LLM API keys

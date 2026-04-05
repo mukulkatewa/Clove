@@ -1,6 +1,6 @@
 version: '3.8'
 services:
-  clove:
+  kernel:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -12,12 +12,35 @@ services:
     environment:
       - CLOVE_API_KEY=${CLOVE_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     restart: unless-stopped
     command: >
       --socket /tmp/clove.sock
       --db /data/clove.db
       --api --api-port 8080
+      --openrouter
       --a2a --mcp
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  mcp:
+    build:
+      context: ../mcp-server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - CLOVE_API_URL=http://kernel:8080
+      - CLOVE_MCP_KEY=${CLOVE_MCP_KEY:-}
+    restart: unless-stopped
+    depends_on:
+      kernel:
+        condition: service_healthy
 
 volumes:
   clove-data:

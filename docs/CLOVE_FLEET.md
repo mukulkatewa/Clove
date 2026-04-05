@@ -70,9 +70,14 @@ Every agent in the fleet has access to real tools:
 
 ## Agent Coordination
 
-Agents in a fleet currently run independently on the same goal. The kernel synthesizes their outputs after all complete.
+Agents in a fleet run independently on the same goal. The kernel synthesizes their outputs after all complete.
 
-Future: agents will coordinate via kernel IPC (SYS_SEND/SYS_RECV) and shared memory blocks (SYS_MEM_SHARE), enabling pipeline workflows where agent outputs feed into other agents.
+Agents can also coordinate directly via kernel primitives:
+- **Mailbox IPC** (`SYS_SEND`/`SYS_RECV`) — 0.02ms point-to-point messaging between agents
+- **Shared memory** (`SYS_MEM_SHARE`) — one agent stores findings, others recall without re-searching
+- **Event bus** (`SYS_EMIT`/`SYS_SUBSCRIBE`) — pub/sub across all agents in the fleet
+
+Use `tools: ["remember", "recall"]` in your fleet request to enable cross-agent memory sharing.
 
 ## Cost Control
 
@@ -97,7 +102,7 @@ Result: 3 agents search in parallel, each finds different angles, kernel synthes
 
 ## Scaling
 
-The kernel's RunEngine is ~320 LOC C++. Each agent runs in its own thread. Memory overhead per agent is minimal (~3MB). A single kernel instance can comfortably run 20+ parallel agents on a modern machine.
+Each agent runs in its own thread via the RunEngine. Memory overhead per agent is minimal (~3MB). A single kernel instance can comfortably run 20+ parallel agents on a modern machine.
 
 | Agents | RAM overhead | Typical wall time | Typical cost |
 |--------|-------------|-------------------|--------------|

@@ -410,7 +410,7 @@ clove-v2/
 | Kernel LOC | 19,737 C++ |
 | Total LOC | ~26,000 |
 | Syscalls | 86 |
-| API endpoints | 71 |
+| API endpoints | 65 |
 | Tests | 165 (all passing) |
 | Startup | 52ms |
 | Base RAM | 12.9 MB |

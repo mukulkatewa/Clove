@@ -8,7 +8,7 @@ Build an OpenClaw plugin called `clove` that:
 1. Registers `openclaw clove {launch, status, stop, fleet, connect}` CLI commands
 2. Registers CLOVE as an inference provider (LLM calls route through kernel — cost tracked, PII filtered)
 3. Manages the CLOVE kernel lifecycle as a background service
-4. When ISandboxProvider lands (PR #38959), implements `sandbox.mode: "clove"`
+4. Implements `sandbox.mode: "clove"` via ISandboxProvider when available
 
 **Reference implementation:** NemoClaw at `/Users/anixd/Documents/NemoClaw/nemoclaw/src/`
 
@@ -304,7 +304,7 @@ OpenClaw thinks it's just calling another LLM provider. The kernel transparently
 
 ## Exec Routing
 
-When ISandboxProvider lands (PR #38959), or via `tools.exec.host: "node"`:
+Via `tools.exec.host: "node"` or ISandboxProvider:
 
 ```
 OpenClaw agent wants to run "ls -la"
@@ -347,11 +347,9 @@ async function startKernel(config: ClovePluginConfig, logger: PluginLogger) {
   ];
 
   // Auto-detect LLM provider from environment
-  for (const key of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) {
-    if (process.env[key]) {
-      args.push('--openrouter', '--openrouter-key', process.env[key]);
-      break;
-    }
+  // Kernel reads OPENROUTER_API_KEY and ANTHROPIC_API_KEY directly from env on startup
+  if (process.env.OPENROUTER_API_KEY) {
+    args.push('--openrouter'); // key is read from OPENROUTER_API_KEY env var
   }
 
   // Spawn kernel as background process
