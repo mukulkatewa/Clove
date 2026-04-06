@@ -1,63 +1,73 @@
 # CLOVE v2 — Architecture
 
-> 86 syscalls | 14 libraries | 65 API endpoints | C++23
+> 86 syscalls · 14 libraries · 65+ API endpoints · C++23  
+> Deployed: Railway (kernel + MCP) · npm: `@cloveos/mcp-server`
 
 ---
 
 ## System Overview
 
 ```
-                    ┌─────────────────────────────────┐
-                    │         Agent Processes          │
-                    │  (Python, Node, Go, any lang)    │
-                    └──────────────┬──────────────────┘
-                                   │ Unix Socket (/tmp/clove.sock)
-                                   │ 17-byte header + JSON payload
-                    ┌──────────────▼──────────────────┐
-                    │         CLOVE KERNEL             │
-                    │                                  │
-                    │  ┌──────────────────────────┐   │
-                    │  │     Syscall Router        │   │
-                    │  │  ┌────────────────────┐  │   │
-                    │  │  │  Budget Middleware  │  │   │
-                    │  │  │  (step + time chk) │  │   │
-                    │  │  └────────┬───────────┘  │   │
-                    │  │           │ dispatch      │   │
-                    │  │  ┌────────▼───────────┐  │   │
-                    │  │  │  22 Syscall Modules │  │   │
-                    │  │  │  (86 handlers)      │  │   │
-                    │  │  └────────────────────┘  │   │
-                    │  └──────────────────────────┘   │
-                    │                                  │
-                    │  ┌──────────────────────────┐   │
-                    │  │     KernelContext         │   │
-                    │  │  (dependency injection)   │   │
-                    │  └──────────────────────────┘   │
-                    │         │        │        │      │
-                    └─────────┼────────┼────────┼──────┘
-                              │        │        │
-              ┌───────────────┤        │        ├────────────────┐
-              │               │        │        │                │
-    ┌─────────▼────┐  ┌──────▼───┐ ┌──▼─────┐ ┌▼──────────┐ ┌──▼──────┐
-    │  Isolation    │  │ Orchestr │ │Context │ │Governance  │ │  Integ  │
-    │              │  │          │ │        │ │            │ │         │
-    │ namespaces   │  │scheduler │ │artifacts│ │permissions │ │OpenRouter│
-    │ cgroups v2   │  │llm_queue │ │chains  │ │audit_log   │ │MCP      │
-    │ landlock     │  │state_str │ │mem_blks│ │pii_filter  │ │A2A      │
-    │ seccomp      │  │event_bus │ │ctx_asm │ │exec_replay │ │OTel     │
-    │ egress proxy │  │mailbox   │ │        │ │budget_enf  │ │tunnels  │
-    └──────────────┘  └──────────┘ └────────┘ └────────────┘ └─────────┘
-                              │        │
-                      ┌───────▼────────▼───────┐
-                      │     Persistence        │
-                      │  SQLite (WAL mode)     │
-                      │  ┌──────┬──────┬─────┐ │
-                      │  │state │arts  │mem  │ │
-                      │  │store │chains│blks │ │
-                      │  │audit │      │     │ │
-                      │  └──────┴──────┴─────┘ │
-                      └────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │  Clients                                                  │
+  │  Claude Code · Cursor · any MCP host · REST API calls     │
+  └────────────────────────┬─────────────────────────────────┘
+                           │ HTTPS
+              ┌────────────┴────────────┐
+              │                         │
+  ┌───────────▼──────────┐  ┌──────────▼──────────────────┐
+  │  MCP Server (Node.js) │  │  Kernel REST API             │
+  │  /mcp  StreamableHTTP │  │  65+ endpoints  port $PORT  │
+  │  /health              │  │  Auth: Bearer CLOVE_API_KEY │
+  └───────────┬───────────┘  └──────────┬──────────────────┘
+              │ HTTP (Railway internal)  │
+              └──────────┬──────────────┘
+                         │
+  ┌──────────────────────▼───────────────────────────────────┐
+  │  CLOVE KERNEL (C++23)                                     │
+  │                                                           │
+  │  ┌──────────────────────────────────────────────────┐    │
+  │  │ SyscallRouter  ──→ Budget middleware              │    │
+  │  │                ──→ 22 syscall modules (86 ops)    │    │
+  │  └──────────────────────────────────────────────────┘    │
+  │                                                           │
+  │  ┌─────────────┐ ┌──────────────┐ ┌──────────────────┐  │
+  │  │ Orchestration│ │ Context Layer│ │ Governance       │  │
+  │  │ scheduler    │ │ artifacts    │ │ permissions/RBAC │  │
+  │  │ llm_queue    │ │ chains       │ │ audit_log        │  │
+  │  │ state_store  │ │ memory_blks  │ │ pii_filter       │  │
+  │  │ event_bus    │ │ ctx_assembler│ │ budget_enforcer  │  │
+  │  └─────────────┘ └──────────────┘ └──────────────────┘  │
+  │                                                           │
+  │  ┌─────────────┐ ┌──────────────┐ ┌──────────────────┐  │
+  │  │ Sandbox      │ │ Integrations │ │ Persistence      │  │
+  │  │ namespaces   │ │ OpenRouter   │ │ SQLite WAL       │  │
+  │  │ cgroups v2   │ │ Anthropic    │ │ workspaces       │  │
+  │  │ landlock     │ │ MCP bridge   │ │ agent_runs       │  │
+  │  │ seccomp BPF  │ │ A2A bridge   │ │ memory_blocks    │  │
+  │  └─────────────┘ └──────────────┘ └──────────────────┘  │
+  └──────────────────────────────────────────────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │  Supabase (cloud)    │
+              │  workspaces          │
+              │  agent_definitions   │
+              │  agent_runs          │
+              │  workspace_outputs   │
+              └─────────────────────┘
 ```
+
+---
+
+## Deployment (Current)
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| Kernel | `https://kernel-production-96de.up.railway.app` | C++ binary, Alpine Linux |
+| MCP | `https://mcp-production-07a6.up.railway.app/mcp` | Node.js, StreamableHTTP |
+| Database | SQLite `/data/clove.db` on Railway volume | Local + Supabase sync |
+
+Internal communication: MCP → Kernel via `http://kernel.railway.internal:8080`
 
 ---
 
@@ -87,249 +97,41 @@
 
 ---
 
-## Data Flow: SYS_THINK (with full pipeline)
+## Data Flow: Agent Job (end to end)
 
 ```
-Agent: client.think_with_context(prompt, chain_id)
+User (Claude Code) calls clove_submit_job
          │
+         ▼ POST /api/jobs  (Bearer CLOVE_API_KEY)
+  ┌──────────────────┐
+  │  ApiServer       │──→ auth middleware
+  │  job_queue.push()│
+  └──────┬───────────┘
+         │ async worker picks up job
          ▼
-    ┌─────────────┐
-    │ SyscallRouter│──→ Budget check (step + time)
-    └──────┬──────┘
-           ▼
-    ┌─────────────┐    ┌──────────────────────────────────┐
-    │ LlmSyscalls │───→│ ContextAssembler.assemble()       │
-    │             │    │  1. SYSTEM memory blocks (pinned)  │
-    │             │    │  2. CORE memory blocks (always)    │
-    │             │    │  3. FINAL artifacts from chain     │
-    │             │    │  4. RECALL blocks (if space)       │
-    │             │    │  5. Observation masking (compress)  │
-    │             │    └──────────────┬───────────────────┘
-    │             │                   │ assembled context
-    │             │◄──────────────────┘
-    │             │
-    │  ┌──────────▼──────────┐
-    │  │ Scheduler: WAITING_LLM │
-    │  └──────────┬──────────┘
-    │             ▼
-    │  ┌──────────────────┐
-    │  │ PrivacyFilter    │──→ PII scan/redact/block
-    │  └──────┬───────────┘
-    │         ▼
-    │  ┌──────────────────┐
-    │  │ InferenceGateway │──→ Model allowlist + cost limit
-    │  └──────┬───────────┘
-    │         ▼
-    │  ┌──────────────────┐
-    │  │ LlmQueue         │──→ Worker thread
-    │  │ (8 workers)      │    │
-    │  └──────────────────┘    ▼
-    │                    ┌──────────────┐
-    │                    │ OpenRouter   │──→ HTTPS POST
-    │                    │ (300+ models)│    openrouter.ai/api/v1
-    │                    └──────┬───────┘
-    │                           ▼
-    │  ┌────────────────────────────────────┐
-    │  │ Budget tracking:                    │
-    │  │  budget.record_tokens(response.tok) │
-    │  │  budget.record_cost(response.usd)   │
-    │  │  if exceeded → BUDGET_EXCEEDED event│
-    │  └────────────────────────────────────┘
-    │             │
-    │  ┌──────────▼──────────┐
-    │  │ Scheduler: READY     │
-    │  └──────────┬──────────┘
-    │             ▼
-    └──→ Response to agent: {content, tokens, cost_usd, model}
-```
-
----
-
-## Isolation Model
-
-```
-┌───────────────────────────────────────────────────┐
-│ Host OS                                            │
-│                                                    │
-│  ┌─────────────────────────────────────────────┐  │
-│  │ CLOVE Kernel Process                         │  │
-│  │                                              │  │
-│  │  ┌─────────────┐  ┌─────────────┐           │  │
-│  │  │ Agent 1     │  │ Agent 2     │           │  │
-│  │  │             │  │             │           │  │
-│  │  │ PID NS  ✓   │  │ PID NS  ✓   │  ...     │  │
-│  │  │ MNT NS  ✓   │  │ MNT NS  ✓   │           │  │
-│  │  │ UTS NS  ✓   │  │ UTS NS  ✓   │           │  │
-│  │  │ NET NS  ✓   │  │ NET NS  ✓   │           │  │
-│  │  │             │  │             │           │  │
-│  │  │ cgroups v2  │  │ cgroups v2  │           │  │
-│  │  │ mem: 256MB  │  │ mem: 512MB  │           │  │
-│  │  │ cpu: 50%    │  │ cpu: 100%   │           │  │
-│  │  │ pids: 64    │  │ pids: 128   │           │  │
-│  │  │             │  │             │           │  │
-│  │  │ Landlock    │  │ Landlock    │           │  │
-│  │  │ /tmp: rw    │  │ /data: ro   │           │  │
-│  │  │ /data: ro   │  │             │           │  │
-│  │  │             │  │             │           │  │
-│  │  │ seccomp BPF │  │ seccomp BPF │           │  │
-│  │  │ 27 blocked  │  │ 27 blocked  │           │  │
-│  │  └─────────────┘  └─────────────┘           │  │
-│  │                                              │  │
-│  │  Kernel enforces:                            │  │
-│  │  - Per-agent permissions (RBAC)              │  │
-│  │  - Budget limits (token/step/time/cost)      │  │
-│  │  - PII filtering on LLM calls                │  │
-│  │  - Domain allowlists for HTTP                │  │
-│  │  - Command blocklists for EXEC               │  │
-│  └─────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────┘
-```
-
----
-
-## Memory Architecture (3-Tier)
-
-```
-┌───────────────────────────────────────────┐
-│ Tier 1: Working Memory (LLM Context)      │
-│ Location: In the prompt sent to LLM       │
-│ Size: 4K─200K tokens (model-dependent)    │
-│                                           │
-│ Assembled by ContextAssembler:            │
-│  ┌─────────────────────────────────────┐  │
-│  │ [SYSTEM] Agent persona (pinned)     │  │
-│  │ [CORE] Current task state           │  │
-│  │ [CORE] Findings so far              │  │
-│  │ ─── Shared Context ───              │  │
-│  │ ### Research: Market Analysis        │  │
-│  │ ### Research: Tech Landscape         │  │
-│  │ [RECALL] Reference data             │  │
-│  │ ─── Private Notes ───               │  │
-│  │ ### Draft: My observations          │  │
-│  │ ─── Task Instruction ───            │  │
-│  │ "Synthesize the above research..." │  │
-│  └─────────────────────────────────────┘  │
-├───────────────────────────────────────────┤
-│ Tier 2: Session Memory (Kernel RAM)       │
-│ Location: In-memory stores                │
-│ Latency: <1ms                             │
-│                                           │
-│ MemoryBlockStore  ArtifactStore  StateStore│
-│ ┌────────────┐  ┌────────────┐  ┌───────┐│
-│ │ SYSTEM blk │  │ art_abc123 │  │ key:v ││
-│ │ CORE blk   │  │ art_def456 │  │ key:v ││
-│ │ RECALL blk │  │ art_ghi789 │  │ key:v ││
-│ └────────────┘  └────────────┘  └───────┘│
-├───────────────────────────────────────────┤
-│ Tier 3: Persistent Memory (SQLite)        │
-│ Location: clove.db                        │
-│ Latency: 1─10ms                           │
-│                                           │
-│ Tables:                                   │
-│ ┌────────────┬──────────┬───────────────┐│
-│ │ artifacts  │ chains   │ memory_blocks ││
-│ │ state_store│ audit_log│               ││
-│ └────────────┴──────────┴───────────────┘│
-│ Write-through on every mutation           │
-│ Boot-loaded into Tier 2 on kernel start   │
-└───────────────────────────────────────────┘
-```
-
----
-
-## Agent Scheduler
-
-```
-Priority Queue (lower number = higher priority)
-
-  CRITICAL (0) ──→ ┌─────┐ ┌─────┐
-                    │ A:1 │ │ A:5 │  ← served first
-                    └─────┘ └─────┘
-  HIGH (1) ──────→ ┌─────┐
-                    │ A:3 │
-                    └─────┘
-  NORMAL (2) ────→ ┌─────┐ ┌─────┐ ┌─────┐
-                    │ A:2 │ │ A:7 │ │ A:9 │  ← FIFO within level
-                    └─────┘ └─────┘ └─────┘
-  LOW (3) ───────→ ┌─────┐
-                    │ A:4 │
-                    └─────┘
-  IDLE (4) ──────→ (empty)
-
-State tracking per agent:
-  IDLE ──→ READY ──→ WAITING_LLM ──→ READY ──→ WAITING_TOOL ──→ READY ──→ COMPLETED
-                          │                          │
-                     (SYS_THINK)                (SYS_HTTP/EXEC)
-
-Stats tracked: llm_calls, tool_calls, total_llm_wait_ms, total_tool_wait_ms
-```
-
----
-
-## Budget Enforcement Pipeline
-
-```
-Every syscall enters SyscallRouter::handle()
+  ┌──────────────────┐
+  │  RunEngine       │──→ load agent def from workspace
+  │  tool-call loop  │──→ build_tools(allowed_tools)
+  └──────┬───────────┘
          │
-         ▼
-    ┌──────────────────────────────┐
-    │ 1. budget.record_step()      │  ← increment step counter
-    │ 2. budget.check_steps()      │  ← max_steps exceeded?
-    │ 3. budget.check_time(now)    │  ← max_time_ms exceeded?
-    └──────────┬───────────────────┘
-               │
-          pass │                fail
-               │                  │
-               ▼                  ▼
-        Dispatch to          Return error
-        handler              + emit BUDGET_EXCEEDED
-               │              + audit log
-               ▼              + kill if kill_on_exceeded
-        (after SYS_THINK)
-               │
-    ┌──────────▼───────────────────┐
-    │ 4. budget.record_tokens(N)   │  ← from LLM response
-    │ 5. budget.record_cost($)     │  ← from LLM response
-    │ 6. budget.check_tokens()     │  ← max_tokens exceeded?
-    │ 7. budget.check_cost()       │  ← max_cost_usd exceeded?
-    └──────────────────────────────┘
-
-Time budget: checked every reactor poll (~100ms) in Kernel::run()
+    ┌────▼──────────────────────────────────────┐
+    │ Step N: SYS_THINK                          │
+    │  ContextAssembler.assemble()               │
+    │  PrivacyFilter.scan()                      │
+    │  LlmQueue.submit() → OpenRouter/Anthropic  │
+    │  budget.record_tokens/cost()               │
+    └────┬──────────────────────────────────────┘
+         │ tool call in response?
+         ├─ YES → dispatch tool (mcp_call, store, http, exec...)
+         │        → loop back to SYS_THINK
+         └─ NO  → job COMPLETED
+                  persist run to SQLite + Supabase
+                  emit job.completed event
 ```
 
 ---
 
-## Library Dependency Graph
-
-```
-core ◄──────────────────────────────────────────────────────────┐
-  │                                                              │
-  ├──→ reactor                                                   │
-  │                                                              │
-  ├──→ ipc ──→ (uses core for protocol)                         │
-  │                                                              │
-  ├──→ orchestration ──→ (state, events, mailbox, scheduler)    │
-  │         │                                                    │
-  │         └──→ agents ──→ sandbox                              │
-  │                                                              │
-  ├──→ context ──→ (artifacts, chains, memory blocks, assembler)│
-  │                                                              │
-  ├──→ governance ──→ (permissions, audit, pii, policy, budget) │
-  │                                                              │
-  ├──→ integrations ──→ (openrouter, mcp, a2a, tunnel, otel)   │
-  │                                                              │
-  ├──→ persistence ──→ (sqlite: context + governance)           │
-  │                                                              │
-  ├──→ worlds ──→ (isolated realms)                              │
-  │                                                              │
-  ├──→ api ──→ (REST + dashboard)                                │
-  │                                                              │
-  └──→ kernel ──→ (wires everything, 22 syscall modules)────────┘
-```
-
----
-
-## Wire Protocol
+## Wire Protocol (Unix socket, local agents)
 
 ```
 ┌──────────┬──────────┬────────┬──────────────┬─────────────────┐
@@ -337,7 +139,68 @@ core ◄────────────────────────
 │  4 bytes │ 4 bytes  │ 1 byte │   8 bytes    │ variable (JSON) │
 │ "AGNT"   │ uint32   │ uint8  │   uint64     │ max 1 MB        │
 └──────────┴──────────┴────────┴──────────────┴─────────────────┘
-             17-byte header                    UTF-8 JSON body
+  17-byte header                               UTF-8 JSON body
+```
+
+---
+
+## Memory Architecture (3-Tier)
+
+```
+Tier 1 — Working Memory (LLM context window)
+  Assembled per SYS_THINK call by ContextAssembler
+  [SYSTEM] pinned persona blocks
+  [CORE]   current task state + findings
+  [SHARED] cross-agent artifacts
+  [RECALL] retrieved relevant blocks
+  [TASK]   current instruction
+
+Tier 2 — Session Memory (kernel RAM, <1ms)
+  MemoryBlockStore   — typed blocks (SYSTEM/CORE/RECALL/ARCHIVE)
+  ArtifactStore      — typed docs (research/analysis/report/plan)
+  StateStore         — flat KV (agent scratch space)
+
+Tier 3 — Persistent Memory (SQLite WAL, 1-10ms)
+  memory_blocks, artifacts, chains, state_store, audit_log
+  Boot-loaded into Tier 2 on kernel start
+  Write-through on every mutation
+```
+
+---
+
+## Sandbox (Linux)
+
+```
+Per-agent process isolation:
+  PID namespace   — agent can't see/kill host processes
+  MNT namespace   — private filesystem view
+  UTS namespace   — isolated hostname
+  NET namespace   — optional: no network access
+  cgroups v2      — memory/CPU/PID limits
+  Landlock        — filesystem path allowlist
+  seccomp BPF     — 27 dangerous syscalls blocked
+                    (ptrace, kexec, mount, bpf, userfaultfd, ...)
+  Default policy  — allow-all minus deny-list
+```
+
+---
+
+## Library Dependency Graph
+
+```
+core
+ ├── reactor          (epoll/kqueue event loop)
+ ├── ipc              (unix socket server/client)
+ ├── orchestration    (scheduler, llm_queue, state, events, mailbox)
+ │    └── agents      (process management)
+ │         └── sandbox (namespaces, cgroups, landlock, seccomp)
+ ├── context          (artifacts, chains, memory blocks, assembler)
+ ├── governance       (permissions, audit, pii, policy, budget)
+ ├── integrations     (openrouter, anthropic, mcp, a2a, tunnel)
+ ├── persistence      (sqlite: 5 tables)
+ ├── worlds           (multi-tenant workspace isolation)
+ └── api              (REST + job queue + run engine)
+      └── kernel      (wires all 22 syscall modules)
 ```
 
 ---
@@ -347,39 +210,36 @@ core ◄────────────────────────
 ```
 clove-v2/
 ├── kernel/src/
-│   ├── main.cpp                 # Entry point
-│   ├── kernel.cpp/hpp           # Kernel class (wiring)
-│   ├── context.hpp              # KernelContext (DI)
-│   ├── syscall_router.cpp/hpp   # Dispatch + budget middleware
-│   └── syscalls/
-│       ├── mod.hpp              # 22 module class declarations
-│       ├── state_syscalls.cpp   # STORE/FETCH/DELETE/KEYS
-│       ├── ipc_syscalls.cpp     # SEND/RECV/BROADCAST/REGISTER
-│       ├── event_syscalls.cpp   # SUBSCRIBE/EMIT/POLL
-│       ├── agent_syscalls.cpp   # SPAWN/KILL/LIST/PAUSE/RESUME
-│       ├── llm_syscalls.cpp     # THINK + context assembly + budget tracking
-│       ├── context_syscalls.cpp # DOC/CHAIN ops + persistence
-│       ├── memory_syscalls.cpp  # MEM ops + persistence
-│       ├── budget_syscalls.cpp  # SET/GET_BUDGET + SET/GET_PRIORITY
-│       ├── replay_syscalls.cpp  # RECORD + REPLAY (with on_tick playback)
-│       └── ... (13 more)
+│   ├── main.cpp                 # Entry point, env var config (PORT, CLOVE_API_KEY)
+│   ├── kernel.cpp               # Kernel class — subsystem wiring
+│   ├── syscall_router.cpp       # Dispatch + budget middleware
+│   └── syscalls/                # 22 modules, 86 handlers
 ├── libs/
-│   ├── core/          # Protocol, config, types
-│   ├── reactor/       # Event loop (epoll/kqueue)
-│   ├── ipc/           # Unix socket server/client
-│   ├── agents/        # Process management
-│   ├── sandbox/       # Namespaces, cgroups, Landlock, seccomp
-│   ├── orchestration/ # Scheduler, LLM queue, state, events, mailbox
-│   ├── context/       # Artifacts, chains, memory blocks, assembler
-│   ├── governance/    # Permissions, audit, PII, policy, budget
-│   ├── integrations/  # OpenRouter, MCP, A2A, tunnels, OTel
-│   ├── persistence/   # SQLite (5 tables)
-│   ├── worlds/        # Multi-tenant isolation
-│   └── api/           # REST API + HTMX dashboard
-├── cli/src/           # CLI binary
-├── sdk/python/        # Python SDK (86 methods + Agent class)
-├── tests/             # 19 test files (Catch2)
-├── deploy/            # Dockerfile, docker-compose, systemd, install.sh
-├── docs/              # 8 docs (capabilities, roadmap, architecture, research)
-└── examples/          # OpenClaw demo, 10-agent research station
+│   ├── core/                    # Protocol, config, types
+│   ├── reactor/                 # Event loop
+│   ├── ipc/                     # Unix socket
+│   ├── agents/                  # Process management
+│   ├── sandbox/                 # OS isolation
+│   ├── orchestration/           # Scheduler, LLM queue, state, events
+│   ├── context/                 # Artifacts, chains, memory, assembler
+│   ├── governance/              # Permissions, audit, PII, budget
+│   ├── integrations/            # OpenRouter, Anthropic, MCP, A2A
+│   ├── persistence/             # SQLite (WAL)
+│   ├── worlds/                  # Workspace isolation
+│   └── api/                     # REST API, job queue, run engine
+├── mcp-server/                  # Node.js MCP server (npm: @cloveos/mcp-server)
+├── deploy/                      # Dockerfile, docker-compose, railway.toml
+├── docs/                        # Architecture, API spec, capabilities, roadmap
+└── tests/                       # 165 tests (Catch2)
 ```
+
+---
+
+## Related Docs
+
+- [API Reference](./API_SPEC.md)
+- [Capabilities](./CAPABILITIES.md)
+- [Multi-User Architecture](./MULTI_USER.md)
+- [Security & Compliance](./architecture/SECURITY_COMPLIANCE.md)
+- [Memory Architecture](./architecture/MEMORY_ARCHITECTURE.md)
+- [Scheduler Design](./architecture/SCHEDULER_DESIGN.md)
