@@ -1,11 +1,8 @@
-[[services]]
-name = "kernel"
-
-[services.build]
+[build]
 builder = "dockerfile"
 dockerfilePath = "deploy/Dockerfile"
 
-[services.deploy]
+[deploy]
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"
