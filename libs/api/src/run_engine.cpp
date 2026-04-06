@@ -401,7 +401,7 @@ std::string RunEngine::tool_recall(const std::string& query) {
     std::string results;
     for (const auto& k : keys) {
         auto val = state_.fetch(k, 0);
-        if (val) results += *val + "\n";
+        if (val) results += val->dump() + "\n";
     }
     return results.empty() ? "(no memories found)" : results;
 }
