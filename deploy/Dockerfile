@@ -9,7 +9,7 @@ RUN mkdir -p build && cd build && \
 
 # Stage 2: Runtime
 FROM alpine:3.19
-RUN apk add --no-cache libstdc++ openssl libcurl sqlite-libs
+RUN apk add --no-cache libstdc++ openssl libcurl sqlite-libs && mkdir -p /data
 COPY --from=builder /build/build/kernel/clove_kernel /usr/local/bin/
 COPY --from=builder /build/build/cli/clove_cli /usr/local/bin/clove
 EXPOSE 8080 8081
