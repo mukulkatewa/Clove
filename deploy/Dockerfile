@@ -5,6 +5,7 @@ WORKDIR /build
 COPY . .
 RUN mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build . --target spdlog fmt -j$(nproc) && \
     cmake --build . --target clove_kernel clove_cli -j$(nproc)
 
 # Stage 2: Runtime
