@@ -63,6 +63,11 @@ int main(int argc, char** argv) {
     if (api_key_env && api_key_env[0]) {
         config.api_key = api_key_env;
     }
+    // Railway (and similar PaaS) set PORT at runtime — use it if present
+    const char* port_env = getenv("PORT");
+    if (port_env && port_env[0]) {
+        config.api_port = static_cast<uint16_t>(std::stoi(port_env));
+    }
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
