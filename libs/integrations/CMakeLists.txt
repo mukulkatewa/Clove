@@ -12,5 +12,6 @@ target_link_libraries(clove_integrations PUBLIC
     clove_core
     nlohmann_json::nlohmann_json
     CURL::libcurl
+    spdlog::spdlog
 )
 target_compile_features(clove_integrations PUBLIC cxx_std_23)

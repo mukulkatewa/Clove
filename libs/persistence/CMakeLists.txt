@@ -17,5 +17,6 @@ target_link_libraries(clove_persistence PUBLIC
     nlohmann_json::nlohmann_json
     SQLite::SQLite3
     httplib::httplib
+    spdlog::spdlog
 )
 target_compile_features(clove_persistence PUBLIC cxx_std_23)

@@ -19,6 +19,7 @@ target_link_libraries(clove_api PUBLIC
     clove_memory
     nlohmann_json::nlohmann_json
     httplib::httplib
+    spdlog::spdlog
     Threads::Threads
 )
 target_compile_features(clove_api PUBLIC cxx_std_23)
