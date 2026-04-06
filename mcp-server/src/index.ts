@@ -20,9 +20,27 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import http from "node:http";
 
-const KERNEL_URL = process.env.CLOVE_API_URL || "http://localhost:8080";
+const KERNEL_URL = process.env.CLOVE_KERNEL_URL || process.env.CLOVE_API_URL || "http://localhost:8080";
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : null;
 const MCP_KEY = process.env.CLOVE_MCP_KEY ?? "";
+
+// Warn on startup if using default localhost (likely not configured)
+if (!process.env.CLOVE_KERNEL_URL && !process.env.CLOVE_API_URL && !PORT) {
+  console.error(`
+╔─────────────────────────────────────────────────────╗
+│  CLOVE MCP Server                                   │
+│                                                     │
+│  No kernel URL set. Using localhost:8080.           │
+│                                                     │
+│  To use the hosted kernel, add to mcp.json:         │
+│                                                     │
+│  "env": {                                           │
+│    "CLOVE_KERNEL_URL": "https://kernel-production-96de.up.railway.app",
+│    "CLOVE_API_KEY":    "clove-prod-70f36e07a895a89c1fd82b84ec35a4d7"
+│  }                                                  │
+╚─────────────────────────────────────────────────────╝
+`);
+}
 
 // ── Kernel API helper ────────────────────────────────────────────────────────
 
@@ -31,9 +49,13 @@ async function kernel<T>(
   method = "GET",
   body?: unknown
 ): Promise<T> {
+  const apiKey = process.env.CLOVE_API_KEY ?? "";
   const opts: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}),
+    },
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(`${KERNEL_URL}${path}`, opts);

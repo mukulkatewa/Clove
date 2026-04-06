@@ -1,104 +1,75 @@
 # CLOVE MCP Server
 
-Connect Claude Code — or any MCP-compatible AI tool — directly to a CLOVE kernel. Run agents, manage memory, schedule jobs, and orchestrate fleets without leaving your editor.
+Connect Claude Code — or any MCP-compatible AI tool — to a full AI agent OS. Run persistent agents, chain async jobs, manage memory, and orchestrate multi-agent pipelines without leaving your editor.
 
-**60+ tools** covering agent execution, memory, async jobs, daemons, workspaces, governance, search, and more.
-
----
-
-## Quickstart
-
-### Use the hosted server
-
-The fastest way to get started. No setup required — connect to a running CLOVE instance:
-
-```json
-{
-  "mcpServers": {
-    "clove": {
-      "url": "https://your-clove.up.railway.app/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-Add this to your Claude Code settings (`~/.claude/settings.json`) and you're done.
+**60+ tools.** Persistent agents · async job pipelines · sandboxed execution · A2A · multi-model routing.
 
 ---
 
-### Run locally
+## Quickstart (30 seconds)
 
-If you're running a CLOVE kernel on your own machine:
+Add this to your Claude Code MCP settings (`~/.claude/mcp.json`):
 
-**1. Start the kernel**
-```bash
-clove start
-```
-
-**2. Add to Claude Code**
 ```json
 {
   "mcpServers": {
     "clove": {
       "command": "npx",
-      "args": ["@cloveos/mcp-server"],
+      "args": ["-y", "@cloveos/mcp-server"],
       "env": {
-        "CLOVE_API_URL": "http://localhost:8080"
+        "CLOVE_KERNEL_URL": "https://kernel-production-96de.up.railway.app",
+        "CLOVE_API_KEY": "clove-prod-70f36e07a895a89c1fd82b84ec35a4d7"
       }
     }
   }
 }
 ```
 
-That's it. Claude Code will start the MCP server automatically when needed.
+Restart Claude Code. Done — you now have a full agent OS connected.
+
+---
+
+## Hosted Endpoints
+
+| Service | URL |
+|---------|-----|
+| Kernel API | `https://kernel-production-96de.up.railway.app` |
+| MCP (HTTP) | `https://mcp-production-07a6.up.railway.app/mcp` |
+| Health | `https://kernel-production-96de.up.railway.app/api/health` |
+
+---
+
+## Using the hosted MCP directly (Cursor, Zed, etc.)
+
+```json
+{
+  "mcpServers": {
+    "clove": {
+      "url": "https://mcp-production-07a6.up.railway.app/mcp"
+    }
+  }
+}
+```
 
 ---
 
 ## Self-hosting
 
-Deploy CLOVE on Railway, Fly.io, or any VPS and share access with your team.
+Deploy your own kernel on Railway, Fly.io, or any VPS.
 
-### Deploy on Railway
+**Kernel env vars:**
+| Variable | Purpose |
+|----------|---------|
+| `CLOVE_API_KEY` | REST API auth key |
+| `OPENROUTER_API_KEY` | 300+ models via OpenRouter |
+| `ANTHROPIC_API_KEY` | Native Anthropic API |
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app)
-
-Set these environment variables on your Railway service:
-
-| Variable | Value |
-|----------|-------|
-| `PORT` | `3001` |
-| `CLOVE_API_URL` | Internal URL of your kernel service |
-| `CLOVE_MCP_KEY` | A strong secret key you choose |
-
-Railway automatically provisions HTTPS. Your team connects via:
-```
-https://your-mcp.up.railway.app/mcp
-```
-
-### Docker
-
-```bash
-docker run -p 3001:3001 \
-  -e PORT=3001 \
-  -e CLOVE_API_URL=http://your-kernel:8080 \
-  -e CLOVE_MCP_KEY=your-secret-key \
-  ghcr.io/cloveos/mcp-server
-```
-
----
-
-## Authentication
-
-All connections to a hosted CLOVE MCP server require an API key. Pass it as a bearer token:
-
-```
-Authorization: Bearer YOUR_CLOVE_MCP_KEY
-```
-
-Every major MCP client — Claude Code, Cursor, Zed — supports bearer token auth in their settings. If you're self-hosting, set `CLOVE_MCP_KEY` to any secret string you choose. If it's not set, the server accepts all connections (fine for local use, not for production).
+**MCP server env vars:**
+| Variable | Purpose |
+|----------|---------|
+| `CLOVE_KERNEL_URL` | URL of your kernel (internal or public) |
+| `CLOVE_API_KEY` | Must match kernel's API key |
+| `CLOVE_MCP_KEY` | Optional: guards the MCP endpoint itself |
 
 ---
 
@@ -130,21 +101,6 @@ Every major MCP client — Claude Code, Cursor, Zed — supports bearer token au
 | `clove_message_agent` | Send a message to an agent |
 | `clove_broadcast` | Broadcast a message to all agents |
 
-### Agent Definitions
-| Tool | Description |
-|------|-------------|
-| `clove_define_agent` | Create or update an agent definition |
-| `clove_list_agent_defs` | List all agent definitions |
-| `clove_update_agent_def` | Update an existing definition |
-
-### Daemon Agents
-| Tool | Description |
-|------|-------------|
-| `clove_list_daemons` | List running daemons with uptime and tick count |
-| `clove_start_daemon` | Start an agent as an always-on daemon |
-| `clove_stop_daemon` | Stop a daemon |
-| `clove_daemon_dream` | Trigger a memory consolidation cycle |
-
 ### Memory
 | Tool | Description |
 |------|-------------|
@@ -160,7 +116,7 @@ Every major MCP client — Claude Code, Cursor, Zed — supports bearer token au
 |------|-------------|
 | `clove_audit` | Query the audit log |
 | `clove_set_policy` | Update inference policy — model allowlist, cost limits |
-| `clove_get_policy` | Get the current policy |
+| `clove_get_policy` | Get current policy |
 | `clove_privacy_scan` | Scan text for PII |
 
 ### Workspaces
@@ -174,48 +130,25 @@ Every major MCP client — Claude Code, Cursor, Zed — supports bearer token au
 | Tool | Description |
 |------|-------------|
 | `clove_list_schedules` | List cron schedules |
-| `clove_list_webhooks` | List registered webhooks |
 | `clove_create_webhook` | Register a webhook |
 | `clove_delete_webhook` | Remove a webhook |
-
-### Search
-| Tool | Description |
-|------|-------------|
-| `clove_web_search` | Web search |
-| `clove_google_scholar` | Academic paper search |
 
 ### Status & Metrics
 | Tool | Description |
 |------|-------------|
 | `clove_status` | Kernel health, uptime, version |
 | `clove_cost` | Total spend and per-agent cost breakdown |
-| `clove_metrics` | System metrics — CPU, memory, agent counts |
+| `clove_metrics` | System metrics |
 
 ### MCP Passthrough
 | Tool | Description |
 |------|-------------|
 | `clove_mcp_servers` | List MCP servers connected to the kernel |
-| `clove_mcp_tools` | List tools available via the kernel's MCP connections |
 | `clove_mcp_call` | Call any MCP tool through the kernel |
-
----
-
-## Resources
-
-| URI | Returns |
-|-----|---------|
-| `clove://memory/<id>` | Memory block contents |
-| `clove://trace/<chain_id>` | Full execution trace |
 
 ---
 
 ## Requirements
 
 - Node.js 22+
-- A running CLOVE kernel (local or hosted)
-
-```bash
-# Install and run locally
-npm install -g @cloveos/mcp-server
-npx @cloveos/mcp-server
-```
+- A running CLOVE kernel (use the hosted one above, or self-host)
