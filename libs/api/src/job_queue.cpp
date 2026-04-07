@@ -240,7 +240,17 @@ void JobQueue::worker_loop() {
 
         ++active_count_;
         spdlog::info("JobQueue: starting job {} — {}", job_id.substr(0,8), job.goal.substr(0,60));
-        execute_job(job);
+        try {
+            execute_job(job);
+        } catch (const std::exception& ex) {
+            job.status = "failed";
+            job.error  = std::string("worker crash: ") + ex.what();
+            spdlog::error("JobQueue: worker caught unhandled exception for job {}: {}", job_id.substr(0,8), ex.what());
+        } catch (...) {
+            job.status = "failed";
+            job.error  = "worker crash: unknown exception";
+            spdlog::error("JobQueue: worker caught unknown exception for job {}", job_id.substr(0,8));
+        }
         --active_count_;
 
         {

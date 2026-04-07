@@ -2,6 +2,7 @@
 #include <clove/version.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <curl/curl.h>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -31,6 +32,9 @@ void print_banner() {
 }
 
 int main(int argc, char** argv) {
+    // Must be called once before any curl_easy_init() across all threads
+    curl_global_init(CURL_GLOBAL_ALL);
+
     print_banner();
 
     // Load .env file if present (check current dir, then parent)
@@ -157,5 +161,6 @@ int main(int argc, char** argv) {
 
     std::cout << "\n    " << term::YELLOW << "⟳" << term::RESET
               << "  Shutdown complete.\n\n";
+    curl_global_cleanup();
     return 0;
 }
