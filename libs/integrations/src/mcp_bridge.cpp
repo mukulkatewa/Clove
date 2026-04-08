@@ -255,7 +255,13 @@ void McpBridge::kill_process(McpSession& session) {
 bool McpBridge::write_json(McpSession& session, const nlohmann::json& msg) {
     std::string line = msg.dump() + "\n";
     ssize_t written = write(session.stdin_fd, line.data(), line.size());
-    return written == static_cast<ssize_t>(line.size());
+    if (written != static_cast<ssize_t>(line.size())) {
+        // Broken pipe — child process died; mark disconnected so future calls
+        // return an error immediately instead of hanging or crashing.
+        session.connected = false;
+        return false;
+    }
+    return true;
 }
 
 nlohmann::json McpBridge::send_request(McpSession& session,

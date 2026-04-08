@@ -35,6 +35,10 @@ int main(int argc, char** argv) {
     // Must be called once before any curl_easy_init() across all threads
     curl_global_init(CURL_GLOBAL_ALL);
 
+    // Ignore SIGPIPE — MCP subprocesses may die while we hold their pipe fds.
+    // Without this, any write() to a dead child stdin terminates the kernel.
+    signal(SIGPIPE, SIG_IGN);
+
     print_banner();
 
     // Load .env file if present (check current dir, then parent)
