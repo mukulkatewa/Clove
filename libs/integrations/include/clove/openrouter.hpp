@@ -12,7 +12,7 @@ struct OpenRouterConfig {
     std::string base_url = "https://openrouter.ai/api/v1";
     std::string default_model = "openai/gpt-4o";
     bool zero_data_retention = false;
-    int timeout_ms = 120000;
+    int timeout_ms = 25000;  // 25s — stays below Railway's 30s upstream timeout
     std::string app_name = "clove";
     std::string app_url = "https://cloveos.com";
 };
