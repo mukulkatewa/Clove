@@ -38,6 +38,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <curl/curl.h>
 
 #include <chrono>
 #include <sstream>
@@ -2138,21 +2139,64 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
-    // GET /api/test/openrouter — raw connectivity test, bypasses RunEngine
+    // GET /api/test/https — raw HTTPS connectivity test via libcurl, no RunEngine
+    // Tests: 1) curl connectivity, 2) SSL/TLS, 3) openrouter.ai reachability
     // -----------------------------------------------------------------------
-    svr.Get("/api/test/openrouter", [this](const httplib::Request&, httplib::Response& res) {
-        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
-            res.set_content(R"({"error":"OpenRouter not configured"})", "application/json");
-            return;
+    svr.Get("/api/test/https", [](const httplib::Request&, httplib::Response& res) {
+        json results;
+
+        // Test 1: Plain HTTPS to api.github.com (known-good endpoint)
+        {
+            CURL* curl = curl_easy_init();
+            std::string body;
+            if (curl) {
+                auto cb = +[](char* p, size_t s, size_t n, void* d) -> size_t {
+                    static_cast<std::string*>(d)->append(p, s*n); return s*n; };
+                curl_easy_setopt(curl, CURLOPT_URL, "https://api.github.com");
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cb);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+                curl_easy_setopt(curl, CURLOPT_USERAGENT, "clove/2.0");
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+                curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+                CURLcode rc = curl_easy_perform(curl);
+                long code = 0;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+                curl_easy_cleanup(curl);
+                results["github_rc"] = (int)rc;
+                results["github_status"] = (int)code;
+                results["github_ok"] = (rc == CURLE_OK);
+            } else {
+                results["github_rc"] = -1;
+            }
         }
-        auto resp = ctx_.openrouter->chat("openai/gpt-4o-mini", "say hi in one word", {});
-        json j;
-        j["success"] = resp.success;
-        j["content"] = resp.content;
-        j["error"] = resp.error;
-        j["model"] = resp.model_used;
-        j["tokens"] = resp.usage.total_tokens;
-        res.set_content(j.dump(), "application/json");
+
+        // Test 2: HTTPS GET to openrouter.ai/api/v1/models (lightweight, no auth)
+        {
+            CURL* curl = curl_easy_init();
+            std::string body;
+            if (curl) {
+                auto cb = +[](char* p, size_t s, size_t n, void* d) -> size_t {
+                    static_cast<std::string*>(d)->append(p, s*n); return s*n; };
+                curl_easy_setopt(curl, CURLOPT_URL, "https://openrouter.ai/api/v1/models");
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cb);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+                curl_easy_setopt(curl, CURLOPT_USERAGENT, "clove/2.0");
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+                curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+                CURLcode rc = curl_easy_perform(curl);
+                long code = 0;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+                curl_easy_cleanup(curl);
+                results["openrouter_rc"] = (int)rc;
+                results["openrouter_status"] = (int)code;
+                results["openrouter_ok"] = (rc == CURLE_OK);
+                results["openrouter_bytes"] = (int)body.size();
+            } else {
+                results["openrouter_rc"] = -1;
+            }
+        }
+
+        res.set_content(results.dump(), "application/json");
     });
 
     // Run — full agent tool-calling loop (synchronous)
