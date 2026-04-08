@@ -22,6 +22,7 @@
 #include <clove/chain_store.hpp>
 #include <clove/context_assembler.hpp>
 #include <clove/memory_block_store.hpp>
+#include <clove/memory_block_db.hpp>
 #include <clove/run_engine.hpp>
 #include <clove/openclaw_manager.hpp>
 #include <clove/mailbox.hpp>
@@ -267,11 +268,13 @@ void ApiServer::setup_routes() {
             return httplib::Server::HandlerResponse::Unhandled;
         }
 
-        auto auth = req.get_header_value("Authorization");
-        if (auth != "Bearer " + api_key_) {
-            res.status = 401;
-            res.set_content(R"({"error":"unauthorized"})", "application/json");
-            return httplib::Server::HandlerResponse::Handled;
+        if (!api_key_.empty()) {
+            auto auth = req.get_header_value("Authorization");
+            if (auth != "Bearer " + api_key_) {
+                res.status = 401;
+                res.set_content(R"({"error":"unauthorized"})", "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
         }
         return httplib::Server::HandlerResponse::Unhandled;
     });
@@ -2135,6 +2138,23 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
+    // GET /api/test/openrouter — raw connectivity test, bypasses RunEngine
+    // -----------------------------------------------------------------------
+    svr.Get("/api/test/openrouter", [this](const httplib::Request&, httplib::Response& res) {
+        if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+            res.set_content(R"({"error":"OpenRouter not configured"})", "application/json");
+            return;
+        }
+        auto resp = ctx_.openrouter->chat("openai/gpt-4o-mini", "say hi in one word", {});
+        json j;
+        j["success"] = resp.success;
+        j["content"] = resp.content;
+        j["error"] = resp.error;
+        j["model"] = resp.model_used;
+        j["tokens"] = resp.usage.total_tokens;
+        res.set_content(j.dump(), "application/json");
+    });
+
     // Run — full agent tool-calling loop (synchronous)
     // POST /api/run  {"goal": "...", "budget": 0.50, "tools": [...], "model": "..."}
     // -----------------------------------------------------------------------
@@ -3048,6 +3068,7 @@ void ApiServer::setup_routes() {
                 memory_block_type_from_string(type_str),
                 memory_access_from_string(access_str),
                 content, 0);
+            if (ctx_.memory_block_db) ctx_.memory_block_db->store(block);
             res.status = 201;
             res.set_content(memory_block_to_json(block).dump(), "application/json");
         } catch (const std::exception& e) {
@@ -3099,6 +3120,7 @@ void ApiServer::setup_routes() {
             if (ctx_.memory_blocks->write(id, content, 0)) {
                 auto opt = ctx_.memory_blocks->get(id, 0);
                 if (opt) {
+                    if (ctx_.memory_block_db) ctx_.memory_block_db->store(*opt);
                     res.set_content(memory_block_to_json(*opt).dump(), "application/json");
                 } else {
                     res.set_content(R"({"success":true})", "application/json");
@@ -3127,6 +3149,7 @@ void ApiServer::setup_routes() {
         }
         std::string id = req.matches[1];
         if (ctx_.memory_blocks->remove(id, 0)) {
+            if (ctx_.memory_block_db) ctx_.memory_block_db->erase(id);
             res.set_content(R"({"success":true})", "application/json");
         } else {
             res.status = 404;
