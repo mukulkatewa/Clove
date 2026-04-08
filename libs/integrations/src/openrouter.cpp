@@ -54,6 +54,9 @@ OpenRouterClient::HttpResponse OpenRouterClient::http_post(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(config_.timeout_ms));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    // NOSIGNAL is required in multi-threaded apps: without it libcurl may use
+    // SIGALRM for timeouts, which kills the whole process from any thread.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // Follow redirects (OpenRouter may redirect)
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
@@ -96,6 +99,7 @@ OpenRouterClient::HttpResponse OpenRouterClient::http_get(const std::string& pat
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(config_.timeout_ms));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = curl_easy_perform(curl);
 

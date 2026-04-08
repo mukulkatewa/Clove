@@ -237,8 +237,11 @@ std::string RunEngine::tool_http(const std::string& url, const std::string& meth
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 30000L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    // NOSIGNAL: required in multi-threaded apps — CURLOPT_TIMEOUT(_MS) would
+    // otherwise use SIGALRM, which kills the entire process from any thread.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     // User-Agent for web requests
