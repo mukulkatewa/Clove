@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <curl/curl.h>
+#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
