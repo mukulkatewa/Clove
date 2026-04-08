@@ -1,5 +1,8 @@
 #include <clove/run_engine.hpp>
+#include <clove/memory_manager.hpp>
+#include <clove/step_compressor.hpp>
 #include <clove/openrouter.hpp>
+#include <clove/anthropic_client.hpp>
 #include <clove/inference_gateway.hpp>
 #include <clove/privacy_filter.hpp>
 #include <clove/audit_log.hpp>
@@ -36,6 +39,7 @@ static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata
 
 RunEngine::RunEngine(
     OpenRouterClient& openrouter,
+    AnthropicClient*  anthropic,
     InferenceGateway& gateway,
     PrivacyFilter& privacy,
     AuditLogger& audit,
@@ -44,10 +48,12 @@ RunEngine::RunEngine(
     ArtifactStore* artifacts,
     ChainStore* chains,
     MemoryBlockStore* memory,
+    MemoryManager*    memory_mgr,
     McpBridge* mcp,
     ContextAssembler* assembler,
     const KernelConfig& config)
     : openrouter_(openrouter)
+    , anthropic_(anthropic)
     , gateway_(gateway)
     , privacy_(privacy)
     , audit_(audit)
@@ -56,6 +62,7 @@ RunEngine::RunEngine(
     , artifacts_(artifacts)
     , chains_(chains)
     , memory_(memory)
+    , memory_mgr_(memory_mgr)
     , mcp_(mcp)
     , assembler_(assembler)
     , config_(config)
@@ -119,6 +126,48 @@ std::string RunEngine::tool_write_file(const std::string& path, const std::strin
     return "wrote " + std::to_string(content.size()) + " bytes to " + path;
 }
 
+std::string RunEngine::tool_edit_file(const std::string& path, const std::string& old_string, const std::string& new_string) {
+    // Permission check
+    auto& perms = permissions_.get_or_create(agent_id_);
+    if (!perms.can_write) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] write permission denied";
+    }
+    if (!perms.can_write_path(path)) {
+        audit_.log(AuditCategory::SECURITY, "WRITE_PATH_DENIED", agent_id_, "", {{"path", path}}, false);
+        return "[error] path not allowed: " + path;
+    }
+
+    // Read file
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return "[error] cannot read: " + path;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    // Find and replace
+    auto pos = content.find(old_string);
+    if (pos == std::string::npos) {
+        return "[error] old_string not found in " + path + ". Read the file first to get exact text.";
+    }
+
+    // Check uniqueness — warn if multiple matches
+    auto second = content.find(old_string, pos + 1);
+    if (second != std::string::npos) {
+        return "[error] old_string appears multiple times in " + path + ". Provide more context to make it unique.";
+    }
+
+    content.replace(pos, old_string.size(), new_string);
+
+    // Write back
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return "[error] cannot write: " + path;
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    out.close();
+
+    audit_.log(AuditCategory::SYSCALL, "FILE_EDIT", agent_id_, "", {{"path", path}, {"replaced_bytes", old_string.size()}, {"new_bytes", new_string.size()}});
+    return "edited " + path + ": replaced " + std::to_string(old_string.size()) + " bytes with " + std::to_string(new_string.size()) + " bytes";
+}
+
 std::string RunEngine::tool_exec(const std::string& command) {
     // Permission check
     auto& perms = permissions_.get_or_create(agent_id_);
@@ -157,7 +206,7 @@ std::string RunEngine::tool_exec(const std::string& command) {
     return output;
 }
 
-std::string RunEngine::tool_http(const std::string& url, const std::string& method, const std::string& body) {
+std::string RunEngine::tool_http(const std::string& url, const std::string& method, const std::string& body, const nlohmann::json& headers) {
     // Permission check
     auto& perms = permissions_.get_or_create(agent_id_);
     if (!perms.can_http) {
@@ -188,12 +237,25 @@ std::string RunEngine::tool_http(const std::string& url, const std::string& meth
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 30000L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    // NOSIGNAL: required in multi-threaded apps — CURLOPT_TIMEOUT(_MS) would
+    // otherwise use SIGALRM, which kills the entire process from any thread.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     // User-Agent for web requests
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "CLOVE/2.0");
+
+    // Custom headers
+    struct curl_slist* curl_headers = nullptr;
+    if (!headers.empty()) {
+        for (auto& [k, v] : headers.items()) {
+            std::string hdr = k + ": " + v.get<std::string>();
+            curl_headers = curl_slist_append(curl_headers, hdr.c_str());
+        }
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, curl_headers);
+    }
 
     if (method == "POST" || method == "PUT" || method == "PATCH") {
         if (method == "POST") curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -205,6 +267,7 @@ std::string RunEngine::tool_http(const std::string& url, const std::string& meth
     }
 
     CURLcode res = curl_easy_perform(curl);
+    if (curl_headers) curl_slist_free_all(curl_headers);
     long status = 0;
     if (res == CURLE_OK) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -269,62 +332,81 @@ std::string RunEngine::tool_mcp_call(
 }
 
 std::string RunEngine::tool_remember(const std::string& fact) {
-    if (!memory_) {
-        // Fallback to state store
-        state_.store("memory:" + fact.substr(0, 50), fact, 0);
-        return "remembered (via state store)";
+    // ── Three-tier memory (primary path) ──
+    if (memory_mgr_ && active_cfg_ && active_cfg_->use_memory) {
+        return memory_mgr_->remember(
+            active_cfg_->agent_name,
+            active_cfg_->workspace_id,
+            active_cfg_->run_id,
+            current_step_,
+            fact);
     }
-    // Create or append to agent memory block
-    auto blocks = memory_->list(0, 100);
-    std::string block_id;
-    for (const auto& b : blocks) {
-        if (b.name == "agent-memory" && b.type == MemoryBlockType::CORE) {
-            block_id = b.id;
-            break;
+
+    // ── Legacy MemoryBlockStore (fallback) ──
+    if (memory_) {
+        auto blocks = memory_->list(0, 100);
+        std::string block_id;
+        for (const auto& b : blocks) {
+            if (b.name == "agent-memory" && b.type == MemoryBlockType::CORE) {
+                block_id = b.id;
+                break;
+            }
         }
+        if (block_id.empty()) {
+            auto block = memory_->create(0, "agent-memory", MemoryBlockType::CORE,
+                                          MemoryAccess::PRIVATE, "", 0);
+            block_id = block.id;
+        }
+        memory_->append(block_id, "\n" + fact, 0);
+        return "remembered: " + fact.substr(0, 100);
     }
-    if (block_id.empty()) {
-        auto block = memory_->create(0, "agent-memory", MemoryBlockType::CORE,
-                                      MemoryAccess::PRIVATE, "", 0);
-        block_id = block.id;
-    }
-    memory_->append(block_id, "\n" + fact, 0);
-    return "remembered: " + fact.substr(0, 100);
+
+    // ── State store fallback ──
+    state_.store("memory:" + fact.substr(0, 50), fact, 0);
+    return "remembered (via state store)";
 }
 
 std::string RunEngine::tool_recall(const std::string& query) {
-    if (!memory_) {
-        // Fallback: search state store
-        auto keys = state_.keys("memory:", 0);
-        std::string results;
-        for (const auto& k : keys) {
-            auto val = state_.fetch(k, 0);
-            if (val) results += val->get<std::string>() + "\n";
-        }
-        return results.empty() ? "(no memories found)" : results;
+    // ── Three-tier memory (primary path) ──
+    if (memory_mgr_ && active_cfg_ && active_cfg_->use_memory) {
+        return memory_mgr_->recall(
+            active_cfg_->agent_name,
+            active_cfg_->workspace_id,
+            query,
+            current_step_,
+            2000);  // 2000 token budget ≈ ~8000 chars of context
     }
 
-    // Use relevance-scored search (keyword overlap + recency + type priority)
-    auto scored = memory_->search(query, agent_id_, 10);
-    if (scored.empty()) {
-        // Fallback: return all blocks if search returns nothing
-        auto all = memory_->list(agent_id_, 100);
-        if (all.empty()) return "(no memories found)";
+    // ── Legacy MemoryBlockStore (fallback) ──
+    if (memory_) {
+        auto scored = memory_->search(query, agent_id_, 10);
+        if (scored.empty()) {
+            auto all = memory_->list(agent_id_, 100);
+            if (all.empty()) return "(no memories found)";
+            std::string result;
+            for (const auto& b : all) {
+                result += "[" + std::string(memory_block_type_to_string(b.type)) + "] " +
+                          b.name + ":\n" + b.content + "\n\n";
+            }
+            return result;
+        }
         std::string result;
-        for (const auto& b : all) {
-            result += "[" + std::string(memory_block_type_to_string(b.type)) + "] " +
-                      b.name + ":\n" + b.content + "\n\n";
+        for (const auto& sb : scored) {
+            result += "[" + std::string(memory_block_type_to_string(sb.block.type)) +
+                      " | score:" + std::to_string(static_cast<int>(sb.score * 100)) + "%] " +
+                      sb.block.name + ":\n" + sb.block.content + "\n\n";
         }
         return result;
     }
 
-    std::string result;
-    for (const auto& sb : scored) {
-        result += "[" + std::string(memory_block_type_to_string(sb.block.type)) +
-                  " | score:" + std::to_string(static_cast<int>(sb.score * 100)) + "%] " +
-                  sb.block.name + ":\n" + sb.block.content + "\n\n";
+    // ── State store fallback ──
+    auto keys = state_.keys("memory:", 0);
+    std::string results;
+    for (const auto& k : keys) {
+        auto val = state_.fetch(k, 0);
+        if (val) results += val->dump() + "\n";
     }
-    return result;
+    return results.empty() ? "(no memories found)" : results;
 }
 
 // ── Tool dispatch ───────────────────────────────────────────────
@@ -359,6 +441,13 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
             {"content", {{"type", "string"}, {"description", "Content to write"}}}
         }}, {"required", json::array({"path", "content"})}});
 
+    add("edit_file", "Edit a file by replacing an exact string match. More reliable than rewriting the whole file. The old_string must appear exactly once.",
+        {{"type", "object"}, {"properties", {
+            {"path", {{"type", "string"}, {"description", "File path"}}},
+            {"old_string", {{"type", "string"}, {"description", "Exact text to find and replace"}}},
+            {"new_string", {{"type", "string"}, {"description", "Replacement text"}}}
+        }}, {"required", json::array({"path", "old_string", "new_string"})}});
+
     add("exec", "Execute a shell command and return stdout/stderr.",
         {{"type", "object"}, {"properties", {
             {"command", {{"type", "string"}, {"description", "Shell command to execute"}}}
@@ -373,7 +462,8 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
         {{"type", "object"}, {"properties", {
             {"url", {{"type", "string"}, {"description", "URL"}}},
             {"method", {{"type", "string"}, {"description", "HTTP method: GET, POST, PUT, DELETE (default GET)"}}},
-            {"body", {{"type", "string"}, {"description", "Request body (for POST/PUT)"}}}
+            {"body", {{"type", "string"}, {"description", "Request body (for POST/PUT)"}}},
+            {"headers", {{"type", "object"}, {"description", "Optional HTTP headers as key-value pairs, e.g. {\"Authorization\": \"token xyz\", \"Content-Type\": \"application/json\"}"}}}
         }}, {"required", json::array({"url"})}});
 
     add("store", "Store a key-value pair for later retrieval.",
@@ -413,13 +503,15 @@ json RunEngine::build_tools(const std::vector<std::string>& allowed) {
 
     // ── MCP tools (dynamically discovered) ──
     if (mcp_) {
-        auto mcp_tools = mcp_->list_tools();
+        auto mcp_tools = mcp_->list_tools(agent_id_, active_cfg_->agent_name);
         for (const auto& t : mcp_tools) {
             std::string full_name = "mcp_" + t.server_name + "_" + t.name;
-            // Only add if allowed (or no filter)
+            // Only add if allowed (or no filter).
+            // Match against full tool name, "mcp" wildcard, or bare server name (e.g. "github").
             if (!allowed.empty() &&
                 std::find(allowed.begin(), allowed.end(), full_name) == allowed.end() &&
-                std::find(allowed.begin(), allowed.end(), "mcp") == allowed.end()) {
+                std::find(allowed.begin(), allowed.end(), "mcp") == allowed.end() &&
+                std::find(allowed.begin(), allowed.end(), t.server_name) == allowed.end()) {
                 continue;
             }
             tools.push_back({
@@ -448,6 +540,9 @@ std::string RunEngine::execute_tool(
     } else if (name == "write_file") {
         return tool_write_file(args.value("path", ""), args.value("content", ""));
 
+    } else if (name == "edit_file") {
+        return tool_edit_file(args.value("path", ""), args.value("old_string", ""), args.value("new_string", ""));
+
     } else if (name == "exec") {
         return tool_exec(args.value("command", ""));
 
@@ -455,7 +550,8 @@ std::string RunEngine::execute_tool(
         return tool_search(args.value("query", ""), model, cost, tokens);
 
     } else if (name == "http") {
-        return tool_http(args.value("url", ""), args.value("method", "GET"), args.value("body", ""));
+        return tool_http(args.value("url", ""), args.value("method", "GET"), args.value("body", ""),
+                         args.contains("headers") && args["headers"].is_object() ? args["headers"] : json::object());
 
     } else if (name == "store") {
         state_.store(args.value("key", ""), args.value("value", ""), 0);
@@ -640,7 +736,8 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
         "- exec: Run ANY shell command. Use it to explore (ls, find, cat, grep), install packages (pip, npm), "
         "run scripts, compile code, check processes, inspect logs. If a command fails, read the error and fix it.\n"
         "- read_file: Read file contents. Use it to understand code, configs, data files.\n"
-        "- write_file: Write or overwrite files. Use it to produce output, save results, create scripts.\n"
+        "- write_file: Create new files or overwrite existing ones.\n"
+        "- edit_file: Edit a file by replacing an exact string. More reliable than rewriting. Read the file first, then replace the exact text you want to change.\n"
         "- http: Make HTTP requests (GET/POST/PUT/DELETE). Use it to call APIs, fetch web pages, check endpoints.\n"
         "- search: Search the web for information.\n"
         "- store/fetch: Persistent key-value storage. Store intermediate results, share data with other agents.\n"
@@ -689,41 +786,113 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
            !cancelled_)
     {
         result.steps++;
+        current_step_ = result.steps;
 
         emit(on_event, "thinking", {
             {"step", result.steps},
             {"cost_usd", result.total_cost_usd},
         });
 
-        // Observation masking (JetBrains "Complexity Trap", NeurIPS 2025):
-        // Compress tool outputs older than 2 steps. Don't summarize — just truncate.
-        // Research shows this halves cost with equal or better quality.
+        // Auto-compact: when conversation grows large, summarize old tool outputs
+        // instead of just truncating. Uses LLM for smart compression when context
+        // exceeds threshold, falls back to truncation for smaller overages.
         if (result.steps > 2) {
+            // Estimate context size
+            size_t total_chars = 0;
+            for (const auto& m : messages) total_chars += m.value("content", "").size();
+
+            bool use_llm_compact = total_chars > 30000 && result.total_cost_usd < cfg.budget_usd * 0.7;
             int tool_msg_count = 0;
-            for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
-                if ((*it).value("role", "") == "tool") {
-                    tool_msg_count++;
-                    if (tool_msg_count > 2) {
-                        // Compress old tool outputs
-                        std::string content = (*it).value("content", "");
-                        if (content.size() > 200) {
-                            std::string first_line = content.substr(0, content.find('\n'));
-                            if (first_line.size() > 100) first_line = first_line.substr(0, 100);
-                            (*it)["content"] = "[" + first_line + "... " +
-                                std::to_string(content.size()) + " chars truncated]";
+
+            if (use_llm_compact && result.steps > 4) {
+                // LLM-based auto-compact: summarize old messages into a compact summary
+                std::string history_to_compact;
+                int compacted = 0;
+                for (size_t idx = 1; idx < messages.size() - 4; idx++) { // Keep first (system) and last 4
+                    auto& m = messages[idx];
+                    if (m.value("role", "") == "tool" || m.value("role", "") == "assistant") {
+                        history_to_compact += m.value("role", "") + ": " + m.value("content", "").substr(0, 500) + "\n";
+                        compacted++;
+                    }
+                }
+
+                if (compacted > 3 && !history_to_compact.empty()) {
+                    std::string compact_prompt = "Summarize this agent conversation history into bullet points. "
+                        "Preserve: key findings, actions taken, errors encountered, data discovered. "
+                        "Discard: verbose tool output, redundant info. Be brief.\n\n" + history_to_compact;
+
+                    OpenRouterResponse compact_resp;
+                    if (anthropic_ && anthropic_->is_configured() &&
+                        (cfg.model.find("claude") != std::string::npos || cfg.model.find("anthropic") != std::string::npos)) {
+                        auto ar = anthropic_->ask(cfg.model, compact_prompt);
+                        compact_resp.success = ar.success; compact_resp.content = ar.content;
+                        compact_resp.usage.cost_usd = ar.cost_usd;
+                        compact_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+                    } else {
+                        compact_resp = openrouter_.chat(cfg.model, compact_prompt);
+                    }
+                    if (!compact_resp.content.empty()) {
+                        result.total_cost_usd += compact_resp.usage.cost_usd;
+                        result.total_tokens += compact_resp.usage.total_tokens;
+                        gateway_.record_cost(compact_resp.usage.cost_usd);
+
+                        // Replace old messages with summary
+                        json new_messages = json::array();
+                        new_messages.push_back(messages[0]); // system
+                        new_messages.push_back({{"role", "assistant"}, {"content", "[Auto-compact summary of previous " + std::to_string(compacted) + " messages]\n" + compact_resp.content}});
+                        // Keep last 4 messages
+                        for (size_t idx = messages.size() > 4 ? messages.size() - 4 : 1; idx < messages.size(); idx++) {
+                            new_messages.push_back(messages[idx]);
+                        }
+                        messages = new_messages;
+                    }
+                }
+            } else {
+                // Simple truncation for smaller contexts
+                for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+                    if ((*it).value("role", "") == "tool") {
+                        tool_msg_count++;
+                        if (tool_msg_count > 2) {
+                            std::string content = (*it).value("content", "");
+                            if (content.size() > 200) {
+                                std::string first_line = content.substr(0, content.find('\n'));
+                                if (first_line.size() > 100) first_line = first_line.substr(0, 100);
+                                (*it)["content"] = "[" + first_line + "... " +
+                                    std::to_string(content.size()) + " chars truncated]";
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Call LLM with tools
+        // Call LLM with tools — route to Anthropic native for claude-* models
         json options;
         if (!tools_desc.empty()) {
             options["tools"] = tools_desc;
         }
 
-        auto llm_resp = openrouter_.chat_messages(active_model, messages, options);
+        bool use_anthropic = anthropic_ && anthropic_->is_configured() &&
+            (active_model.find("claude") != std::string::npos ||
+             active_model.find("anthropic") != std::string::npos);
+
+        OpenRouterResponse llm_resp;
+        if (use_anthropic) {
+            auto ar = anthropic_->chat(active_model, messages, 8192,
+                tools_desc.empty() ? json::array() : tools_desc);
+            llm_resp.success = ar.success;
+            llm_resp.content = ar.content;
+            llm_resp.model_used = ar.model_used;
+            llm_resp.usage.prompt_tokens = ar.input_tokens;
+            llm_resp.usage.completion_tokens = ar.output_tokens;
+            llm_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+            llm_resp.usage.cost_usd = ar.cost_usd;
+            llm_resp.error = ar.error;
+            llm_resp.raw_json = ar.raw_json;
+        } else {
+            llm_resp = openrouter_.chat_messages(active_model, messages, options);
+        }
+
         result.total_cost_usd += llm_resp.usage.cost_usd;
         result.total_tokens += llm_resp.usage.total_tokens;
         gateway_.record_cost(llm_resp.usage.cost_usd);
@@ -754,7 +923,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
         auto choice = choices[0];
         auto message = choice.value("message", json::object());
-        std::string finish_reason = choice.value("finish_reason", "");
+
+        // Normalize finish_reason — some free models return null
+        std::string finish_reason;
+        auto fr = choice.find("finish_reason");
+        if (fr != choice.end() && fr->is_string()) finish_reason = fr->get<std::string>();
+
+        // Normalize content — some free models return null instead of ""
+        if (message.contains("content") && message["content"].is_null()) {
+            message["content"] = "";
+        }
 
         messages.push_back(message);
 
@@ -827,7 +1005,9 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             messages.push_back({
                 {"role", "tool"},
                 {"tool_call_id", tool_id},
-                {"content", tool_result}
+                {"content", cfg.compress_context
+                    ? StepCompressor::compress(tool_name, tool_result)
+                    : tool_result}
             });
         }
     }
@@ -862,7 +1042,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
             "What went wrong and what should you do differently on your next attempt? "
             "Be specific and actionable.";
 
-        auto reflection_resp = openrouter_.chat(active_model, reflection_prompt);
+        OpenRouterResponse reflection_resp;
+        if (anthropic_ && anthropic_->is_configured() &&
+            (active_model.find("claude") != std::string::npos || active_model.find("anthropic") != std::string::npos)) {
+            auto ar = anthropic_->ask(active_model, reflection_prompt);
+            reflection_resp.success = ar.success; reflection_resp.content = ar.content;
+            reflection_resp.usage.cost_usd = ar.cost_usd;
+            reflection_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+        } else {
+            reflection_resp = openrouter_.chat(active_model, reflection_prompt);
+        }
         result.total_cost_usd += reflection_resp.usage.cost_usd;
         result.total_tokens += reflection_resp.usage.total_tokens;
 
@@ -919,7 +1108,27 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
                 json options;
                 if (!tools_desc.empty()) options["tools"] = tools_desc;
 
-                auto llm_resp = openrouter_.chat_messages(active_model, messages, options);
+                bool use_anthropic_r = anthropic_ && anthropic_->is_configured() &&
+                    (active_model.find("claude") != std::string::npos ||
+                     active_model.find("anthropic") != std::string::npos);
+
+                OpenRouterResponse llm_resp;
+                if (use_anthropic_r) {
+                    auto ar = anthropic_->chat(active_model, messages, 8192,
+                        tools_desc.empty() ? json::array() : tools_desc);
+                    llm_resp.success = ar.success;
+                    llm_resp.content = ar.content;
+                    llm_resp.model_used = ar.model_used;
+                    llm_resp.usage.prompt_tokens = ar.input_tokens;
+                    llm_resp.usage.completion_tokens = ar.output_tokens;
+                    llm_resp.usage.total_tokens = ar.input_tokens + ar.output_tokens;
+                    llm_resp.usage.cost_usd = ar.cost_usd;
+                    llm_resp.error = ar.error;
+                    llm_resp.raw_json = ar.raw_json;
+                } else {
+                    llm_resp = openrouter_.chat_messages(active_model, messages, options);
+                }
+
                 result.total_cost_usd += llm_resp.usage.cost_usd;
                 result.total_tokens += llm_resp.usage.total_tokens;
                 gateway_.record_cost(llm_resp.usage.cost_usd);
@@ -941,10 +1150,16 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
 
                 auto choice = choices[0];
                 auto message = choice.value("message", json::object());
+
+                std::string fr2;
+                auto fr2_it = choice.find("finish_reason");
+                if (fr2_it != choice.end() && fr2_it->is_string()) fr2 = fr2_it->get<std::string>();
+
+                if (message.contains("content") && message["content"].is_null()) message["content"] = "";
                 messages.push_back(message);
 
                 auto tool_calls = message.value("tool_calls", json::array());
-                if (tool_calls.empty() || choice.value("finish_reason", "") == "stop") {
+                if (tool_calls.empty() || fr2 == "stop") {
                     if (message.contains("content") && message["content"].is_string()) {
                         result.content = message["content"].get<std::string>();
                     } else {
@@ -972,7 +1187,10 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
                     });
 
                     messages.push_back({
-                        {"role", "tool"}, {"tool_call_id", tool_id}, {"content", tool_result}
+                        {"role", "tool"}, {"tool_call_id", tool_id},
+                        {"content", cfg.compress_context
+                            ? StepCompressor::compress(tool_name, tool_result)
+                            : tool_result}
                     });
                 }
             }
@@ -983,6 +1201,11 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     if (artifacts_ && !chain_id.empty() && !result.content.empty()) {
         artifacts_->create(0, ArtifactType::REPORT,
             "Run Result: " + cfg.agent_name, result.content, chain_id);
+    }
+
+    // Post-run memory consolidation: EPISODIC → SEMANTIC
+    if (memory_mgr_ && cfg.use_memory && !cfg.run_id.empty()) {
+        memory_mgr_->consolidate(cfg.agent_name, cfg.run_id);
     }
 
     // Audit
@@ -1006,6 +1229,27 @@ RunResult RunEngine::execute(const RunConfig& cfg, EventCallback on_event) {
     });
 
     return result;
+}
+
+// ── Standalone wrapper for kernel.cpp (avoids EventCallback conflict with reactor.hpp) ──
+RunResult run_engine_execute_standalone(
+    OpenRouterClient& openrouter, AnthropicClient* anthropic, InferenceGateway& inference, PrivacyFilter& privacy,
+    AuditLogger& audit, StateStore& state, PermissionsStore& perms,
+    ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+    MemoryManager* memory_mgr,
+    McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
+    const std::string& goal, const std::string& model, double budget,
+    const std::string& agent_name, const std::vector<std::string>& tools)
+{
+    RunEngine engine(openrouter, anthropic, inference, privacy, audit, state, perms,
+        artifacts, chains, memory, memory_mgr, mcp, assembler, config);
+    RunConfig cfg;
+    cfg.goal = goal;
+    cfg.model = model;
+    cfg.budget_usd = budget;
+    cfg.agent_name = agent_name;
+    cfg.allowed_tools = tools;
+    return engine.execute(cfg);
 }
 
 } // namespace clove

@@ -385,7 +385,7 @@ SYS_CREDS_GET       = 0xD8   // Get credentials for a provider (kernel-managed)
 SYS_OTEL_SPAN       = 0xD9   // Emit an OpenTelemetry span
 ```
 
-Total: 66 syscalls (57 original + 9 new)
+Total: 86 syscalls (57 original + 9 new integrations + 20 context/memory/world/daemon)
 
 ---
 

@@ -87,7 +87,7 @@ result = crew.run()
 
 ## For OpenClaw Users: Secure Your Agent in 60 Seconds
 
-OpenClaw is powerful. Gartner called it "insecure by default." CLOVE fixes that.
+OpenClaw is powerful but ships with no sandbox, no cost caps, and no audit trail. CLOVE fixes that.
 
 ```bash
 # Install CLOVE
@@ -296,7 +296,7 @@ Save the file. CLOVE detects the change instantly (kqueue/inotify). Agent permis
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**66 kernel syscalls.** Agents talk to the kernel via a binary IPC protocol (17-byte header + JSON payload). Every action — LLM call, HTTP request, file access, agent-to-agent message — goes through the kernel. The kernel enforces permissions, logs everything, and coordinates the fleet.
+**86 kernel syscalls.** Agents talk to the kernel via a binary IPC protocol (17-byte header + JSON payload). Every action — LLM call, HTTP request, file access, agent-to-agent message — goes through the kernel. The kernel enforces permissions, logs everything, and coordinates the fleet.
 
 ---
 
@@ -340,7 +340,7 @@ Memory:            2.8 MB idle (324x lighter than Docker stack)
 Binary:            2.1 MB (1,690x smaller than container images)
 Shutdown:          1ms (instant graceful stop)
 
-Syscalls:          66 kernel operations
+Syscalls:          86 kernel operations
 Event types:       12 typed pub/sub events
 Audit categories:  8 structured log categories
 PII patterns:      5 built-in + custom regex

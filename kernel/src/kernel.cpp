@@ -23,6 +23,9 @@
 #include <clove/database.hpp>
 #include <clove/audit_store.hpp>
 #include <clove/state_store_db.hpp>
+#include <clove/workspace_db.hpp>
+#include <clove/supabase_sync.hpp>
+#include <clove/job_queue.hpp>
 #include <clove/mcp_bridge.hpp>
 #include <clove/a2a_bridge.hpp>
 #include <clove/tunnel_bridge.hpp>
@@ -34,9 +37,35 @@
 #include <clove/artifact_store_db.hpp>
 #include <clove/memory_block_store.hpp>
 #include <clove/memory_block_db.hpp>
+#include <clove/memory_manager.hpp>
 #include <clove/agent_scheduler.hpp>
 #include <clove/sandbox.hpp>
 #include <clove/openclaw_manager.hpp>
+#include <clove/daemon_manager.hpp>
+#include <clove/anthropic_client.hpp>
+
+// Forward-declare standalone runner to avoid EventCallback naming conflict with reactor.hpp
+// (run_engine.hpp defines EventCallback = function<void(RunEvent)>, reactor.hpp defines it as function<void(int,uint32_t)>)
+namespace clove {
+    struct RunResult {
+        bool success = false;
+        std::string content;
+        std::string error;
+        std::string chain_id;
+        int steps = 0;
+        int total_tokens = 0;
+        double total_cost_usd = 0.0;
+        std::vector<nlohmann::json> step_log;
+    };
+    RunResult run_engine_execute_standalone(
+        OpenRouterClient& openrouter, AnthropicClient* anthropic, InferenceGateway& inference, PrivacyFilter& privacy,
+        AuditLogger& audit, StateStore& state, PermissionsStore& perms,
+        ArtifactStore* artifacts, ChainStore* chains, MemoryBlockStore* memory,
+        MemoryManager* memory_mgr,
+        McpBridge* mcp, ContextAssembler* assembler, const KernelConfig& config,
+        const std::string& goal, const std::string& model, double budget,
+        const std::string& agent_name, const std::vector<std::string>& tools);
+}
 
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
@@ -355,6 +384,99 @@ bool Kernel::init() {
             }
             spdlog::info("Persistence: loaded {} memory blocks", mem_blocks.size());
 
+            // New typed DB layers
+            workspace_db_  = std::make_unique<WorkspaceDb>(*database_);
+            agent_def_db_  = std::make_unique<AgentDefDb>(*database_);
+            ws_data_db_    = std::make_unique<WorkspaceDataDb>(*database_);
+            ws_output_db_  = std::make_unique<WorkspaceOutputDb>(*database_);
+            agent_run_db_  = std::make_unique<AgentRunDb>(*database_);
+            swarm_db_      = std::make_unique<SwarmDb>(*database_);
+
+            // Three-tier memory manager — backed by the same SQLite database
+            memory_manager_ = std::make_unique<MemoryManager>(*database_);
+            spdlog::info("MemoryManager: three-tier memory system ready");
+
+            // Supabase cloud sync — reads from env vars
+            {
+                const char* url = std::getenv("SUPABASE_URL");
+                const char* key = std::getenv("SUPABASE_SERVICE_KEY");
+                if (url && key && *url && *key) {
+                    supabase_sync_ = std::make_unique<SupabaseSync>(
+                        SupabaseSync::Config{url, key});
+                } else {
+                    spdlog::info("SupabaseSync: SUPABASE_URL / SUPABASE_SERVICE_KEY not set, cloud sync disabled");
+                }
+            }
+
+            // Create native Anthropic client before JobQueue so it can be passed in
+            anthropic_client_ = std::make_unique<AnthropicClient>();
+            {
+                auto ak = state_store_->fetch("provider:anthropic", 0);
+                if (ak && ak->is_object() && ak->contains("api_key")) {
+                    anthropic_client_->configure(ak->at("api_key").get<std::string>());
+                } else if (const char* env_key = getenv("ANTHROPIC_API_KEY")) {
+                    anthropic_client_->configure(env_key);
+                }
+            }
+
+            // Job queue — async pipeline worker pool
+            if (openrouter_) {
+                JobQueueDeps jqdeps{
+                    *openrouter_, anthropic_client_.get(), *inference_gateway_, *privacy_filter_,
+                    *audit_logger_, *state_store_, *permissions_store_,
+                    artifact_store_.get(), chain_store_.get(), memory_block_store_.get(),
+                    memory_manager_.get(),
+                    mcp_bridge_.get(), context_assembler_.get(), config_,
+                    agent_run_db_.get(), supabase_sync_.get()
+                };
+                job_queue_ = std::make_unique<JobQueue>(std::move(jqdeps), 3);
+                job_queue_->recover_stale_jobs(5);
+                spdlog::info("JobQueue: pipeline ready (3 workers)");
+            }
+
+            // Restore worlds from DB into WorldEngine
+            if (world_engine_) {
+                auto ws_rows = workspace_db_->list();
+                for (const auto& ws : ws_rows) {
+                    world_engine_->create(ws.name, ws.metadata);
+                }
+                spdlog::info("Persistence: restored {} workspaces", ws_rows.size());
+            }
+
+            // Migrate any legacy agent-def blobs from state_store → agent_definitions table
+            {
+                auto legacy_keys = state_store_db_->keys("agent-def:");
+                int migrated = 0;
+                for (const auto& k : legacy_keys) {
+                    auto val = state_store_db_->fetch(k);
+                    if (!val) continue;
+                    const auto& j = *val;
+                    AgentDefRow row;
+                    row.name        = j.value("name", "");
+                    row.description = j.value("description", "");
+                    row.enabled     = j.value("enabled", true);
+                    row.goal        = j.contains("action") ? j["action"].value("goal","") : "";
+                    row.model       = j.contains("action") ? j["action"].value("model","") : "";
+                    row.max_steps   = j.contains("action") ? j["action"].value("max_steps", 20) : 20;
+                    row.triggers    = j.value("triggers", nlohmann::json::array());
+                    row.tools       = j.contains("action") ? j["action"].value("tools", nlohmann::json::array()) : nlohmann::json::array();
+                    row.connections = j.value("connections", nlohmann::json::array());
+                    row.permissions = j.value("permissions", nlohmann::json::object());
+                    if (j.contains("budget")) {
+                        row.budget_per_run   = j["budget"].value("per_run", 1.0);
+                        row.budget_daily_max = j["budget"].value("daily_max", 10.0);
+                    }
+                    if (row.name.empty()) continue;
+                    // Only migrate if not already in new table
+                    if (!agent_def_db_->get(row.name)) {
+                        agent_def_db_->upsert(row);
+                        ++migrated;
+                    }
+                }
+                if (migrated > 0)
+                    spdlog::info("Persistence: migrated {} agent-defs from state_store", migrated);
+            }
+
             // Wire write-through to syscall modules
             for (auto& module : modules_) {
                 if (auto* state_mod = dynamic_cast<StateSyscalls*>(module.get())) {
@@ -416,6 +538,47 @@ bool Kernel::init() {
     openclaw_manager_ = std::make_unique<OpenClawManager>(
         *sandbox_manager_, *audit_logger_, config_);
 
+    // Create daemon manager + wire it to RunEngine
+    daemon_manager_ = std::make_unique<DaemonManager>(
+        *state_store_, *audit_logger_, memory_block_store_.get());
+
+    if (openrouter_ && openrouter_->is_configured()) {
+        daemon_manager_->set_run_fn([this](const std::string& agent_name, const std::string& goal, double budget) -> nlohmann::json {
+            std::string model;
+            std::vector<std::string> tools;
+
+            // Load agent-def for tools/model if exists
+            auto def = state_store_->fetch("agent-def:" + agent_name, 0);
+            if (def) {
+                if (def->contains("action")) {
+                    auto& action = (*def)["action"];
+                    if (action.contains("model") && !action["model"].empty())
+                        model = action["model"].get<std::string>();
+                    if (action.contains("tools") && action["tools"].is_array()) {
+                        for (auto& t : action["tools"]) tools.push_back(t.get<std::string>());
+                    }
+                }
+            }
+
+            auto result = run_engine_execute_standalone(
+                *openrouter_, anthropic_client_.get(), *inference_gateway_, *privacy_filter_,
+                *audit_logger_, *state_store_, *permissions_store_,
+                artifact_store_.get(), chain_store_.get(),
+                memory_block_store_.get(), memory_manager_.get(),
+                mcp_bridge_.get(), context_assembler_.get(), config_,
+                goal, model, budget, agent_name, tools);
+
+            return nlohmann::json({
+                {"success", result.success},
+                {"content", result.content},
+                {"total_cost_usd", result.total_cost_usd},
+                {"total_tokens", result.total_tokens},
+                {"steps", result.steps},
+            });
+        });
+        spdlog::info("Daemon manager: run function wired to RunEngine");
+    }
+
     // Start API server
     if (config_.api_enabled) {
         ApiContext api_ctx{
@@ -424,9 +587,19 @@ bool Kernel::init() {
             *audit_logger_, *execution_logger_, *policy_recommender_,
             mcp_bridge_.get(), a2a_bridge_.get(), tunnel_bridge_.get(), world_engine_.get(),
             llm_queue_.get(), artifact_store_.get(), chain_store_.get(),
-            context_assembler_.get(), memory_block_store_.get(), openrouter_.get(),
+            context_assembler_.get(), memory_block_store_.get(), memory_block_db_.get(), openrouter_.get(),
             openclaw_manager_.get(), sandbox_manager_.get(),
-            mailbox_registry_.get()
+            mailbox_registry_.get(), daemon_manager_.get(),
+            anthropic_client_.get(),
+            state_store_db_.get(),
+            workspace_db_.get(),
+            agent_def_db_.get(),
+            ws_data_db_.get(),
+            ws_output_db_.get(),
+            agent_run_db_.get(),
+            swarm_db_.get(),
+            supabase_sync_.get(),
+            job_queue_.get()
         };
         api_server_ = std::make_unique<ApiServer>(api_ctx);
         if (api_server_->start(config_.api_port, config_.api_key)) {
@@ -509,13 +682,72 @@ bool Kernel::init() {
                 } else if (in_server && trimmed.find("env:") == 0) {
                     in_env = true;
                     in_args = false;
+                } else if (in_env) {
+                    // Parse "KEY: value" or "KEY: \"value\"" and apply immediately
+                    auto colon = trimmed.find(':');
+                    if (colon != std::string::npos) {
+                        auto key = trimmed.substr(0, colon);
+                        auto val = trimmed.substr(colon + 1);
+                        while (!val.empty() && (val[0] == ' ' || val[0] == '\t')) val.erase(0, 1);
+                        if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
+                            val = val.substr(1, val.size() - 2);
+                        if (!key.empty() && !val.empty()) {
+                            setenv(key.c_str(), val.c_str(), 1);
+                            spdlog::debug("  MCP env: {}=***", key);
+                        }
+                    }
                 }
-                // env entries are stored but we set them via setenv before spawn
+                // env entries applied via setenv above so child process inherits them
             }
             // Save last server
             if (in_server && !current_server.name.empty()) {
                 mcp_bridge_->add_server(current_server);
                 spdlog::info("  MCP server configured: {}", current_server.name);
+            }
+        }
+
+        // Auto-register MCP servers from environment variables
+        // If a token is present and the server isn't already in mcp.yaml, add it automatically.
+        struct AutoMcp {
+            const char* env_var;
+            std::string name;
+            std::string package;        // npx package
+            bool        is_path_arg;    // true = env_var value is a filesystem path arg, not a token
+        };
+        static const std::vector<AutoMcp> auto_mcps = {
+            {"GITHUB_TOKEN",    "github",     "@modelcontextprotocol/server-github",     false},
+            {"SLACK_BOT_TOKEN", "slack",      "@modelcontextprotocol/server-slack",       false},
+            {"LINEAR_API_KEY",  "linear",     "@linear/mcp-server",                       false},
+            {"FILESYSTEM_PATH", "filesystem", "@modelcontextprotocol/server-filesystem",  true},
+        };
+        for (const auto& am : auto_mcps) {
+            const char* val = getenv(am.env_var);
+            if (!val || std::string(val).empty()) continue;
+            if (mcp_bridge_->has_server(am.name)) continue; // already loaded from mcp.yaml
+
+            McpServerConfig sc;
+            sc.name    = am.name;
+            sc.command = "npx";
+            sc.args    = {"-y", am.package};
+            if (am.is_path_arg) {
+                sc.args.push_back(std::string(val));
+            } else {
+                setenv(am.env_var, val, 1); // ensure child process inherits it
+            }
+            mcp_bridge_->add_server(sc);
+            spdlog::info("Auto-registered MCP '{}' from env {}", am.name, am.env_var);
+        }
+
+        // If FILESYSTEM_PATH not set, register filesystem with HOME as default
+        if (!mcp_bridge_->has_server("filesystem")) {
+            const char* home = getenv("HOME");
+            if (home) {
+                McpServerConfig sc;
+                sc.name    = "filesystem";
+                sc.command = "npx";
+                sc.args    = {"-y", "@modelcontextprotocol/server-filesystem", std::string(home)};
+                mcp_bridge_->add_server(sc);
+                spdlog::info("Auto-registered MCP 'filesystem' (root: {})", home);
             }
         }
 

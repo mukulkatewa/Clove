@@ -54,9 +54,10 @@ add_subdirectory(libs/orchestration)
 add_subdirectory(libs/governance)
 add_subdirectory(libs/integrations)
 add_subdirectory(libs/worlds)
+add_subdirectory(libs/persistence)
+add_subdirectory(libs/memory)
 add_subdirectory(libs/api)
 add_subdirectory(libs/context)
-add_subdirectory(libs/persistence)
 
 # Binaries
 add_subdirectory(kernel)

@@ -29,7 +29,7 @@ const CONFIG_FILE = join(CLOVE_DIR, 'config.json')
 const USER_AGENTS = join(CLOVE_DIR, 'agents')
 const DEFAULT_PORT = 8080
 const __cli_dir = dirname(fileURLToPath(import.meta.url))
-const TEMPLATES_DIR = join(__cli_dir, '..', '..', 'templates')
+const TEMPLATES_DIR = join(CLOVE_DIR, 'templates')
 
 interface CloveConfig {
   kernelPath: string
@@ -38,6 +38,7 @@ interface CloveConfig {
   privacy: boolean
   privacyMode: string
   sandbox: boolean
+  model?: string
 }
 
 function loadConfig(): CloveConfig {
@@ -71,9 +72,7 @@ const SEARCH_PATHS = [
   join(CLOVE_DIR, 'bin', 'clove_kernel'),
   '/usr/local/bin/clove_kernel',
   '/opt/homebrew/bin/clove_kernel',
-  // Dev paths
   join(process.cwd(), 'build', 'kernel', 'clove_kernel'),
-  join(homedir(), 'Documents', 'clove-v2', 'build', 'kernel', 'clove_kernel'),
 ]
 
 function findKernel(configPath: string): string | null {
@@ -143,7 +142,7 @@ async function cmdStart(): Promise<void> {
     console.log('Options:')
     console.log('  1. Build from source:')
     console.log(c.dim('     git clone https://github.com/aniiiiXD/Clove.git'))
-    console.log(c.dim('     cd Clove && git checkout v2'))
+    console.log(c.dim('     cd Clove'))
     console.log(c.dim('     mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release'))
     const cores = platform() === 'darwin' ? '$(sysctl -n hw.ncpu)' : '$(nproc)'
     console.log(c.dim(`     cmake --build . -j${cores}`))
@@ -250,23 +249,40 @@ async function cmdStatus(): Promise<void> {
   console.log('')
 }
 
-async function cmdRun(goal: string, budget = 0.50): Promise<void> {
+async function cmdRun(goal: string, opts: {
+  budget?: number; model?: string; steps?: number;
+  compress?: boolean; memory?: boolean; agent?: string;
+} = {}): Promise<void> {
   const cfg = loadConfig()
   if (!await isRunning(cfg.apiPort)) {
     console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start'))
     return
   }
 
+  const budget = opts.budget ?? 0.50
+  const model  = opts.model  ?? cfg.model ?? ''
+  const maxSteps = opts.steps ?? 20
+  const compress = opts.compress !== false   // default true
+  const memory   = opts.memory  !== false    // default true
+
   console.log(c.cyan('Running agent...'))
-  console.log(c.dim(`  Goal: ${goal}`))
-  console.log(c.dim(`  Budget: $${budget}`))
+  console.log(c.dim(`  Goal:     ${goal}`))
+  console.log(c.dim(`  Budget:   $${budget}`))
+  if (model) console.log(c.dim(`  Model:    ${model}`))
+  console.log(c.dim(`  Steps:    ${maxSteps}  Compress: ${compress}  Memory: ${memory}`))
   console.log('')
 
   const result = await api<{
     success: boolean; content: string; total_cost_usd: number;
     steps: number; total_tokens: number;
     step_log: Array<{ step: number; tool: string; args: unknown }>
-  }>(cfg.apiPort, '/api/run', 'POST', { goal, budget })
+  }>(cfg.apiPort, '/api/run', 'POST', {
+    goal, budget, max_steps: maxSteps,
+    ...(model ? { model } : {}),
+    ...(opts.agent ? { agent_name: opts.agent } : {}),
+    compress_context: compress,
+    use_memory: memory,
+  })
 
   if (!result) {
     console.log(c.red('Failed to reach kernel'))
@@ -285,17 +301,18 @@ async function cmdRun(goal: string, budget = 0.50): Promise<void> {
   // Result
   console.log(result.content)
   console.log('')
-  console.log(c.dim(`${result.success ? c.green('OK') : c.red('FAILED')} | ${result.steps} steps | ${result.total_tokens} tokens | $${result.total_cost_usd.toFixed(6)}`))
+  console.log(c.dim(`${result.success ? c.green('OK') : c.red('FAILED')} | ${result.steps} steps | ${result.total_tokens} tokens | $${(result.total_cost_usd ?? 0).toFixed(6)}`))
 }
 
-async function cmdFleet(goal: string, agents = 3, budget = 1.0): Promise<void> {
+async function cmdFleet(goal: string, agents = 3, budget = 1.0, world?: string): Promise<void> {
   const cfg = loadConfig()
   if (!await isRunning(cfg.apiPort)) {
     console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start'))
     return
   }
 
-  console.log(c.cyan(`Launching ${agents}-agent fleet...`))
+  const worldName = world || `fleet-${Date.now() % 100000}`
+  console.log(c.cyan(`Launching ${agents}-agent fleet in world "${worldName}"...`))
   console.log(c.dim(`  Goal: ${goal}`))
   console.log(c.dim(`  Budget: $${budget}`))
   console.log('')
@@ -303,7 +320,7 @@ async function cmdFleet(goal: string, agents = 3, budget = 1.0): Promise<void> {
   const res = await fetch(`http://localhost:${cfg.apiPort}/api/fleet`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goal, agents, budget }),
+    body: JSON.stringify({ goal, agents, budget, world: worldName }),
   })
 
   const reader = res.body?.getReader()
@@ -355,19 +372,115 @@ function printFleetEvent(ev: { type: string; data: Record<string, unknown> }): v
   }
 }
 
-async function cmdRecall(): Promise<void> {
+async function cmdMemory(args: string[]): Promise<void> {
   const cfg = loadConfig()
-  const result = await api<{ blocks: Array<{ name: string; type: string; content: string; access: string }>; count: number }>(cfg.apiPort, '/api/memory')
-  if (!result || result.count === 0) {
-    console.log(c.dim('No memory blocks'))
-    return
-  }
-  console.log(c.bold(`  ${result.count} memory block(s)`))
-  console.log('')
-  for (const b of result.blocks) {
-    console.log(c.cyan(`  [${b.type}/${b.access}] ${b.name}`))
-    console.log(`  ${b.content.slice(0, 200)}`)
-    console.log('')
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      // New three-tier memory: query /api/memory/list?agent=<name>
+      const agent = args[1] || ''
+      const url = agent ? `/api/memory/list?agent=${encodeURIComponent(agent)}` : '/api/memory/list'
+      const result = await api<{
+        entries: Array<{ id: string; agent_name: string; tier: number; content: string; importance: number; score?: number }>
+        count: number
+      }>(cfg.apiPort, url)
+
+      // Fallback: old memory block store
+      if (!result?.entries) {
+        const old = await api<{ blocks: Array<{ name: string; type: string; content: string }>; count: number }>(cfg.apiPort, '/api/memory')
+        if (!old || old.count === 0) { console.log(c.dim('  No memories')); return }
+        console.log(c.bold(`  ${old.count} memory block(s) (legacy)`))
+        for (const b of old.blocks) {
+          console.log(c.cyan(`  [${b.type}] ${b.name}`))
+          console.log(`  ${b.content.slice(0, 200)}\n`)
+        }
+        return
+      }
+
+      const TIER = ['EPISODIC', 'SEMANTIC', 'PROCEDURAL']
+      const TIER_COLOR = [c.dim, c.cyan, c.bold]
+      console.log('')
+      console.log(c.bold(`  ${result.count} memor${result.count === 1 ? 'y' : 'ies'}`))
+      console.log(c.dim('  ' + '─'.repeat(50)))
+      for (const e of result.entries) {
+        const tier = TIER[e.tier] ?? `tier${e.tier}`
+        const color = TIER_COLOR[e.tier] ?? c.dim
+        console.log(`  ${color(`[${tier}]`)} ${c.dim(e.agent_name)}  imp=${e.importance.toFixed(1)}`)
+        console.log(`  ${e.content.slice(0, 160)}`)
+        console.log('')
+      }
+      break
+    }
+    case 'recall': {
+      const query = args.slice(1).join(' ')
+      if (!query) { console.log('Usage: clove memory recall <query>'); return }
+      const result = await api<{ result: string }>(cfg.apiPort, '/api/memory/recall', 'POST', { query })
+      console.log(result?.result || c.dim('(no memories found)'))
+      break
+    }
+    case 'stats': {
+      const agent = args[1] || ''
+      const url = agent ? `/api/memory/stats?agent=${encodeURIComponent(agent)}` : '/api/memory/stats'
+      const result = await api<{ total: number; episodic: number; semantic: number; procedural: number }>(cfg.apiPort, url)
+      if (!result) { console.log(c.dim('No stats available')); return }
+      console.log('')
+      console.log(c.bold('  Memory stats') + (agent ? c.dim(` (${agent})`) : ''))
+      console.log(`  EPISODIC   : ${result.episodic}`)
+      console.log(`  SEMANTIC   : ${result.semantic}`)
+      console.log(`  PROCEDURAL : ${result.procedural}`)
+      console.log(`  Total      : ${result.total}`)
+      console.log('')
+      break
+    }
+    case 'write':
+    case 'set': {
+      // clove memory write <name> <content> [--type core|system|recall] [--access shared_read|private|shared_readwrite]
+      const name = args[1]
+      const content = args[2]
+      if (!name || !content) {
+        console.log('Usage: clove memory write <name> "<content>" [--type core|system|recall] [--access shared_read|private|shared_readwrite]')
+        return
+      }
+      const typeFlag = args.indexOf('--type')
+      const accessFlag = args.indexOf('--access')
+      const type = typeFlag !== -1 ? args[typeFlag + 1] : 'core'
+      const access = accessFlag !== -1 ? args[accessFlag + 1] : 'shared_read'
+      const block = await api<{ id: string; name: string; type: string }>(
+        cfg.apiPort, '/api/memory', 'POST', { name, content, type, access }
+      )
+      if (block?.id) {
+        console.log(c.green(`  ✓ Stored [${block.type}] "${block.name}" (${block.id})`))
+      } else {
+        console.log(c.red('  ✗ Failed to write memory block'))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      // clove memory delete <id>
+      const id = args[1]
+      if (!id) { console.log('Usage: clove memory delete <mem_id>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/memory/${id}`, 'DELETE')
+      if (result?.success) {
+        console.log(c.green(`  ✓ Deleted ${id}`))
+      } else {
+        console.log(c.red(`  ✗ Not found or not owner: ${id}`))
+      }
+      break
+    }
+    default:
+      console.log('Usage: clove memory [list|recall|stats|write|delete] ...')
+      console.log('  list                               List all memory blocks')
+      console.log('  recall <query>                     Search memory by keyword')
+      console.log('  write <name> "<content>"           Write a memory block')
+      console.log('    --type   core|system|recall      (default: core)')
+      console.log('    --access shared_read|private     (default: shared_read)')
+      console.log('  delete <mem_id>                    Delete a memory block by ID')
+      console.log('  stats                              Show memory statistics')
   }
 }
 
@@ -494,7 +607,7 @@ async function cmdDeploy(name: string, cliArgs: string[]): Promise<void> {
   console.log(c.cyan(`Deploying: ${meta.displayName || name}`))
   console.log(c.dim(`  ${goal.slice(0, 80)}`)); console.log('')
   if (spec.mode === 'fleet') await cmdFleet(goal, (spec.agents as number) || 3, budget)
-  else await cmdRun(goal, budget)
+  else await cmdRun(goal, { budget })
 }
 
 // ── Scheduler ──────────────────────────────────────────────────────────
@@ -567,14 +680,42 @@ const KNOWN_SERVICES: Record<string, { command: string; args: string[]; tokenEnv
 async function cmdConnect(args: string[]): Promise<void> {
   const sub = args[0]
 
+  // Special case: claude auth login (Max/Pro plan, no API key needed)
+  if (sub === 'claude') {
+    console.log('')
+    console.log(c.cyan('  Connecting Claude Code (Max/Pro plan OAuth)'))
+    console.log(c.dim('  This opens a browser to log in with your Anthropic account.'))
+    console.log(c.dim('  No API key required — works with Max and Pro subscriptions.'))
+    console.log('')
+    try {
+      execSync('which claude', { stdio: 'ignore' })
+    } catch {
+      console.log(c.red('  Claude Code not installed.'))
+      console.log(c.dim('  Install: npm i -g @anthropic-ai/claude-code'))
+      return
+    }
+    const { spawnSync } = await import('node:child_process')
+    const result = spawnSync('claude', ['auth', 'login'], { stdio: 'inherit' })
+    if (result.status === 0) {
+      console.log('')
+      console.log(c.green('  Claude Code authenticated!'))
+      console.log(c.dim('  You can now use claude-code as a runtime in pipelines.'))
+      console.log(c.dim('  Try: clove run --runtime claude-code "fix the bug in src/main.ts"'))
+    } else {
+      console.log(c.red('  Auth failed. Try running: claude auth login'))
+    }
+    return
+  }
+
   if (!sub || sub === 'list' || sub === 'ls') {
     const conns = loadConnections()
     if (!conns.length) {
       console.log(''); console.log(c.dim('  No connections. Connect a service:'))
+      console.log(c.dim('  clove connect claude   ← Max/Pro plan (no API key needed)'))
       console.log(c.dim('  clove connect github'))
       console.log(c.dim('  clove connect slack'))
       console.log('')
-      console.log(c.dim('  Available: ' + Object.keys(KNOWN_SERVICES).join(', ')))
+      console.log(c.dim('  Available: claude, ' + Object.keys(KNOWN_SERVICES).join(', ')))
       console.log('')
       return
     }
@@ -727,7 +868,7 @@ function loadLocalAgents(): any[] {
   const agents: any[] = []
   if (!existsSync(USER_AGENTS)) return agents
   for (const dir of readdirSync(USER_AGENTS)) {
-    const p = join(USER_AGENTS, dir, 'agent.json')
+    const p = join(USER_AGENTS, dir, 'agent.yaml')
     if (existsSync(p)) { try { agents.push(JSON.parse(readFileSync(p, 'utf-8'))) } catch {} }
   }
   return agents
@@ -735,7 +876,7 @@ function loadLocalAgents(): any[] {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadAgent(name: string): any | null {
-  const p = join(USER_AGENTS, name, 'agent.json')
+  const p = join(USER_AGENTS, name, 'agent.yaml')
   if (!existsSync(p)) return null
   try { return JSON.parse(readFileSync(p, 'utf-8')) } catch { return null }
 }
@@ -847,10 +988,204 @@ async function cmdMcp(args: string[]): Promise<void> {
     console.log(c.green(`Added MCP server: ${name}`))
     console.log(c.dim(`  Restart kernel to apply: clove stop && clove start`))
   } else if (sub === 'remove' || sub === 'rm') {
-    console.log(c.dim('Edit ~/.clove/mcp.yaml to remove servers, then restart kernel.'))
+    const name = args[1]
+    if (!name) { console.log('Usage: clove mcp remove <server-name>'); return }
+    const mcpPath = join(CLOVE_DIR, 'mcp.yaml')
+    if (!existsSync(mcpPath)) { console.log(c.dim('No mcp.yaml found')); return }
+    let content = readFileSync(mcpPath, 'utf-8')
+    // Remove the server block (simple: filter lines)
+    const lines = content.split('\n')
+    const filtered: string[] = []
+    let skipping = false
+    for (const line of lines) {
+      if (line.includes(`name: "${name}"`) || line.includes(`name: '${name}'`)) { skipping = true; filtered.pop(); continue }
+      if (skipping && (line.startsWith('  -') || line.startsWith('servers:'))) { skipping = false }
+      if (skipping && line.startsWith('    ')) continue
+      skipping = false
+      filtered.push(line)
+    }
+    writeFileSync(mcpPath, filtered.join('\n'))
+    console.log(c.green(`Removed MCP server: ${name}`))
+    console.log(c.dim('  Restart kernel to apply: clove stop && clove start'))
   } else {
     console.log('Usage: clove mcp [list|add|remove]')
   }
+}
+
+// ── Pipeline ──────────────────────────────────────────────────────────
+
+async function cmdPipeline(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  const sub = args[0] || 'list'
+
+  if (sub === 'list' || sub === 'ls') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const r = await api<{ pipelines: any[]; count: number }>(cfg.apiPort, '/api/pipeline-defs')
+    if (!r?.pipelines?.length) { console.log(''); console.log(c.dim('  No pipelines. Create: clove pipeline create <name>')); console.log(''); return }
+    console.log(''); console.log(c.bold('  Pipelines'))
+    console.log(c.dim('  ─────────────────────────────────────────────'))
+    for (const p of r.pipelines) {
+      const steps = (p.steps || []).length
+      console.log(`  ${c.cyan(String(p.name).padEnd(20))} ${steps} steps ${c.dim(p.trigger?.type || 'manual')}`)
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'run') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline run <name>'); return }
+
+    // Load pipeline definition
+    const pdef = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (!pdef || pdef.error) {
+      console.log(c.red(`Pipeline not found: ${name}`)); return
+    }
+
+    console.log(c.cyan(`  Running pipeline: ${name}`))
+    console.log(c.dim(`  ${(pdef.steps || []).length} steps`))
+    console.log('')
+
+    const res = await fetch(`http://localhost:${cfg.apiPort}/api/pipeline/run`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: pdef.name, steps: pdef.steps, context: pdef.context || {} }),
+    })
+
+    const reader = res.body?.getReader()
+    if (!reader) { console.log(c.red('No stream')); return }
+    const decoder = new TextDecoder(); let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n'); buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const ev = JSON.parse(line.slice(6))
+          const t = ev.type; const d = ev.data || {}
+          if (t === 'pipeline_start') console.log(c.cyan(`  Pipeline: ${d.step_count} steps in world "${d.world}"`))
+          else if (t === 'step_start') console.log(`  ${c.dim(`Step ${d.step}:`)} ${c.bold(d.name)} (${d.runtime})...`)
+          else if (t === 'step_done') console.log(`  ${d.success ? c.green('OK') : c.red('FAIL')} ${d.name} — ${c.dim('$' + (d.cost_usd || 0).toFixed(4))}`)
+          else if (t === 'pipeline_done') {
+            console.log('')
+            console.log(`  ${d.success ? c.bold(c.green('Pipeline complete')) : c.bold(c.red('Pipeline failed'))}`)
+            console.log(c.dim(`  ${d.steps_completed}/${d.steps_total} steps · $${(d.total_cost_usd || 0).toFixed(4)}`))
+          }
+        } catch {}
+      }
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'create') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline create <name>'); return }
+    const pipeline = {
+      name,
+      enabled: false,
+      trigger: { type: 'manual' },
+      steps: [
+        { name: 'step-1', runtime: 'clove', role: 'Describe what this step does', tools: ['search', 'http'], budget: 0.30, max_steps: 10, output_key: 'step_1_output' }
+      ]
+    }
+    await api(cfg.apiPort, '/api/pipeline-defs', 'POST', pipeline)
+    console.log(c.green(`  Created pipeline: ${name}`))
+    console.log(c.dim(`  Edit steps, then: clove pipeline run ${name}`))
+    return
+  }
+
+  if (sub === 'show') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline show <name>'); return }
+    const p = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (!p || p.error) { console.log(c.red(`Not found: ${name}`)); return }
+    console.log(''); console.log(c.bold(`  ${p.name}`))
+    console.log(c.dim('  ─────────────────────────────────────'))
+    console.log(`  Trigger: ${p.trigger?.type || 'manual'}`)
+    console.log(`  Steps:`)
+    for (const s of (p.steps || [])) {
+      console.log(`    ${c.cyan(s.name)} (${s.runtime}) — ${s.role?.slice(0, 50) || ''}`)
+    }
+    console.log(''); return
+  }
+
+  if (sub === 'delete' || sub === 'rm') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) { console.log('Usage: clove pipeline delete <name>'); return }
+    await api(cfg.apiPort, `/api/pipeline-defs/${name}`, 'DELETE')
+    console.log(c.green(`  Deleted: ${name}`)); return
+  }
+
+  if (sub === 'enable') {
+    if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+    const name = args[1]; if (!name) return
+    const p = await api<any>(cfg.apiPort, `/api/pipeline-defs/${name}`)
+    if (p) { p.enabled = true; await api(cfg.apiPort, '/api/pipeline-defs', 'POST', p) }
+    console.log(c.green(`  Enabled: ${name}`)); return
+  }
+
+  console.log('Usage: clove pipeline [list|create|show|run|enable|delete] <name>')
+}
+
+// ── Analyze ───────────────────────────────────────────────────────────
+
+async function cmdAnalyze(path: string): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('Not running.')); return }
+  const targetPath = path || '.'
+  console.log(c.cyan(`  Analyzing project at ${targetPath}...`))
+  console.log('')
+
+  // Gather project info via a lightweight agent run
+  const result = await api<{
+    success: boolean; content: string; total_cost_usd: number; steps: number
+  }>(cfg.apiPort, '/api/run', 'POST', {
+    goal: `Analyze the project at ${targetPath}. Do this efficiently:
+1. Run "find ${targetPath} -type f -name '*.ts' -o -name '*.py' -o -name '*.js' -o -name '*.go' -o -name '*.rs' -o -name '*.cpp' | head -30" to see what languages are used.
+2. Run "cat ${targetPath}/package.json 2>/dev/null || cat ${targetPath}/requirements.txt 2>/dev/null || cat ${targetPath}/Cargo.toml 2>/dev/null || echo 'no manifest'" to check dependencies.
+3. Run "ls ${targetPath}/.github/workflows/ 2>/dev/null || echo 'no CI'" to check CI.
+4. Run "wc -l $(find ${targetPath} -type f -name '*.ts' -o -name '*.py' -o -name '*.js' | head -20) 2>/dev/null | tail -1" for LOC estimate.
+
+Based on what you find, output ONLY a JSON array of recommended agents:
+[
+  {"name": "agent-name", "description": "what it does", "trigger": "cron/webhook/manual", "tools": ["tool1", "tool2"], "why": "reason this agent would help"}
+]
+
+Be practical. Only suggest agents that would genuinely help this specific project. Max 5 agents.`,
+    budget: 0.15,
+    max_steps: 8,
+    tools: ['exec', 'read_file'],
+    agent_name: 'project-analyzer',
+  })
+
+  if (!result?.success) {
+    console.log(c.red('  Analysis failed'))
+    console.log(c.dim(`  ${result?.content?.slice(0, 200) || 'Unknown error'}`))
+    return
+  }
+
+  console.log(c.bold('  Recommended Agents'))
+  console.log(c.dim('  ─────────────────────────────────────────────'))
+
+  // Try to parse JSON from response
+  try {
+    const jsonMatch = result.content.match(/\[[\s\S]*\]/)
+    if (jsonMatch) {
+      const agents = JSON.parse(jsonMatch[0])
+      for (const a of agents) {
+        console.log(`  ${c.cyan(a.name.padEnd(22))} ${a.description}`)
+        console.log(`  ${c.dim('trigger:' + (a.trigger || 'manual').padEnd(10))} tools: ${(a.tools || []).join(', ')}`)
+        console.log(`  ${c.dim('→ ' + (a.why || ''))}`)
+        console.log('')
+      }
+      console.log(c.dim(`  Create: clove agent create <name>`))
+      console.log(c.dim(`  Cost: $${result.total_cost_usd.toFixed(4)}`))
+    } else {
+      console.log(result.content)
+    }
+  } catch {
+    console.log(result.content)
+  }
+  console.log('')
 }
 
 // ── World Commands ─────────────────────────────────────────────────────
@@ -891,10 +1226,551 @@ async function cmdWorld(args: string[]): Promise<void> {
       child.on('close', (code) => { if (code !== 0) console.log(c.red(`Exited with code ${code}`)) })
     } else {
       console.log(c.red(`World template not found: ${tplName}`))
-      console.log(c.dim(`  Available: code-health`))
+      console.log(c.dim(`  Available: code-health, code-mapper`))
     }
   } else {
     console.log('Usage: clove world [list|create|launch]')
+  }
+}
+
+// ── Daemon commands ──────────────────────────────────────────────────────
+
+async function cmdDaemon(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start')); return }
+
+  const sub = args[0] || 'list'
+  const name = args[1] || ''
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const res = await api<{ daemons: any[] }>(cfg.apiPort, '/api/daemons')
+      if (!res?.daemons?.length) { console.log(c.dim('No running daemons')); return }
+      console.log('')
+      console.log(c.bold('  Running Daemons'))
+      console.log(c.dim('  ' + '─'.repeat(60)))
+      for (const d of res.daemons) {
+        const uptimeH = Math.floor((d.uptime_s || 0) / 3600)
+        const uptimeM = Math.floor(((d.uptime_s || 0) % 3600) / 60)
+        console.log(`  ${d.status === 'sleeping' ? c.green('●') : d.status === 'acting' ? c.yellow('●') : d.status === 'dreaming' ? c.cyan('●') : c.dim('●')} ${c.bold(d.agent_name)}`)
+        console.log(`    Status: ${d.status}  Ticks: ${d.ticks_total}  Actions: ${d.actions_today}  Cost: $${(d.cost_today || 0).toFixed(4)}  Uptime: ${uptimeH}h${uptimeM}m`)
+      }
+      console.log('')
+      break
+    }
+    case 'start': {
+      if (!name) { console.log('Usage: clove daemon start <agent-name>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/daemons/${name}/start`, 'POST')
+      console.log(res?.success ? c.green(`Daemon started: ${name}`) : c.red(`Failed to start daemon: ${name}`))
+      break
+    }
+    case 'stop': {
+      if (!name) { console.log('Usage: clove daemon stop <agent-name>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/daemons/${name}/stop`, 'POST')
+      console.log(res?.success ? c.green(`Daemon stopped: ${name}`) : c.red(`Failed to stop: ${name}`))
+      break
+    }
+    case 'logs': {
+      if (!name) { console.log('Usage: clove daemon logs <agent-name>'); return }
+      const limit = args[2] ? parseInt(args[2]) : 20
+      const res = await api<{ logs: any[] }>(cfg.apiPort, `/api/daemons/${name}/logs?limit=${limit}`)
+      if (!res?.logs?.length) { console.log(c.dim('No logs yet')); return }
+      for (const entry of res.logs) {
+        const icon = entry.type === 'action' ? c.green('▶') : entry.type === 'dream' ? c.cyan('💤') : entry.type === 'error' ? c.red('✗') : c.dim('·')
+        console.log(`  ${icon} ${c.dim(entry.ts)} ${entry.type}: ${entry.detail}${entry.cost > 0 ? c.yellow(` $${entry.cost.toFixed(4)}`) : ''}`)
+      }
+      break
+    }
+    case 'dream': {
+      if (!name) { console.log('Usage: clove daemon dream <agent-name>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/daemons/${name}/dream`, 'POST')
+      console.log(res?.success ? c.cyan(`Memory consolidation triggered for ${name}`) : c.red('Failed'))
+      break
+    }
+    case 'status':
+    case 'info': {
+      if (!name) { console.log('Usage: clove daemon status <agent-name>'); return }
+      const res = await api<any>(cfg.apiPort, `/api/daemons/${name}`)
+      if (res?.error) { console.log(c.red(`Daemon not found: ${name}`)); return }
+      console.log('')
+      console.log(c.bold(`  Daemon: ${res.agent_name}`))
+      console.log(c.dim('  ' + '─'.repeat(40)))
+      console.log(`  Status:      ${res.status}`)
+      console.log(`  Uptime:      ${Math.floor((res.uptime_s || 0) / 60)}m`)
+      console.log(`  Ticks:       ${res.ticks_total}`)
+      console.log(`  Actions:     ${res.actions_today}`)
+      console.log(`  Cost today:  $${(res.cost_today || 0).toFixed(4)}`)
+      console.log(`  Last tick:   ${res.last_tick_at}`)
+      console.log(`  Current:     ${res.current_action || 'idle'}`)
+      console.log('')
+      break
+    }
+    default:
+      console.log(`Usage: clove daemon [list|start|stop|logs|dream|status] <agent-name>`)
+  }
+}
+
+// ── Provider commands ────────────────────────────────────────────────────
+
+async function cmdProvider(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const res = await api<{ providers: any[] }>(cfg.apiPort, '/api/providers')
+      if (!res?.providers?.length) {
+        console.log(c.dim('No providers configured'))
+        console.log(c.dim('  clove provider set anthropic sk-ant-xxx'))
+        return
+      }
+      console.log('')
+      console.log(c.bold('  LLM Providers'))
+      console.log(c.dim('  ' + '─'.repeat(40)))
+      for (const p of res.providers) {
+        console.log(`  ${c.green('●')} ${c.bold(p.name)} ${c.dim(p.masked_key || '')}`)
+      }
+      console.log('')
+      break
+    }
+    case 'set': {
+      const name = args[1]
+      const key = args[2]
+      if (!name || !key) { console.log('Usage: clove provider set <anthropic|openai|google|openrouter> <api-key>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, '/api/providers', 'POST', { name, api_key: key })
+      console.log(res?.success ? c.green(`Provider ${name} configured`) : c.red('Failed'))
+      break
+    }
+    case 'remove':
+    case 'rm': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove provider remove <name>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/providers/${name}`, 'DELETE')
+      console.log(res?.success ? c.green(`Removed ${name}`) : c.red('Failed'))
+      break
+    }
+    default:
+      console.log('Usage: clove provider [list|set|remove] <name> [key]')
+  }
+}
+
+// ── Runtime commands ─────────────────────────────────────────────────────
+
+async function cmdRuntime(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const res = await api<{ runtimes: any[] }>(cfg.apiPort, '/api/runtimes')
+      console.log('')
+      console.log(c.bold('  Available Runtimes'))
+      console.log(c.dim('  ' + '─'.repeat(40)))
+      if (res?.runtimes) {
+        for (const r of res.runtimes) {
+          console.log(`  ${c.cyan(r.name || r.id)} ${c.dim(r.status || '')}`)
+        }
+      } else {
+        console.log(`  ${c.cyan('clove')}        CLOVE RunEngine (any model via OpenRouter)`)
+        console.log(`  ${c.cyan('claude-code')}  Claude Code (Anthropic models only)`)
+        console.log(`  ${c.cyan('codex')}        Codex (OpenAI models only)`)
+        console.log(`  ${c.cyan('openclaw')}     OpenClaw (any model via OpenRouter)`)
+      }
+      console.log('')
+      break
+    }
+    case 'run': {
+      const runtime = args[1]
+      const goal = args[2]
+      if (!runtime || !goal) { console.log('Usage: clove runtime run <claude-code|codex> "goal"'); return }
+      const budgetIdx = args.indexOf('--budget')
+      const budget = parseFloat(budgetIdx >= 0 && args[budgetIdx + 1] ? args[budgetIdx + 1] : '0.50')
+      console.log(c.cyan(`Spawning ${runtime}...`))
+      const endpoint = runtime === 'codex' ? '/api/runtimes/codex/run' : '/api/runtimes/claude-code/run'
+      const res = await api<{ success: boolean; content: string; total_cost_usd: number }>(
+        cfg.apiPort, endpoint, 'POST', { goal, budget_usd: budget }
+      )
+      if (res) {
+        console.log(res.success ? c.green('Done') : c.red('Failed'))
+        if (res.content) console.log('\n' + res.content)
+        if (res.total_cost_usd) console.log(c.dim(`\nCost: $${res.total_cost_usd.toFixed(4)}`))
+      }
+      break
+    }
+    default:
+      console.log('Usage: clove runtime [list|run] [runtime] ["goal"]')
+  }
+}
+
+// ── OpenClaw commands ────────────────────────────────────────────────────
+
+async function cmdOpenclaw(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.') + c.dim(' Run: clove start')); return }
+
+  const sub = args[0] || 'status'
+
+  switch (sub) {
+    case 'status': {
+      const res = await api<{ instances: any[] }>(cfg.apiPort, '/api/openclaw/status')
+      if (!res?.instances?.length) { console.log(c.dim('No OpenClaw instances running')); return }
+      console.log('')
+      for (const inst of res.instances) {
+        console.log(`  ${inst.state === 'running' ? c.green('●') : c.dim('●')} ${c.bold(inst.name)} ${c.dim(inst.id)} ${c.dim(inst.state)}`)
+      }
+      console.log('')
+      break
+    }
+    case 'spawn': {
+      const name = args[1] || 'openclaw-' + Date.now()
+      const soulIdx = args.indexOf('--soul')
+      const soul = soulIdx >= 0 && args[soulIdx + 1] ? args[soulIdx + 1] : ''
+      const budgetIdx2 = args.indexOf('--budget')
+      const budget = parseFloat(budgetIdx2 >= 0 && args[budgetIdx2 + 1] ? args[budgetIdx2 + 1] : '1.0')
+      console.log(c.cyan(`Spawning OpenClaw: ${name}...`))
+      const res = await api<{ success: boolean; instance_id: string }>(
+        cfg.apiPort, '/api/openclaw/spawn', 'POST',
+        { name, soul_description: soul, budget_usd: budget }
+      )
+      console.log(res?.success ? c.green(`Spawned: ${res.instance_id}`) : c.red('Failed'))
+      break
+    }
+    case 'stop': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove openclaw stop <instance-id>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/openclaw/${id}/stop`, 'POST')
+      console.log(res?.success ? c.green('Stopped') : c.red('Failed'))
+      break
+    }
+    case 'stop-all': {
+      const res = await api<{ success: boolean }>(cfg.apiPort, '/api/openclaw/stop-all', 'POST')
+      console.log(res?.success ? c.green('All instances stopped') : c.red('Failed'))
+      break
+    }
+    default:
+      console.log('Usage: clove openclaw [status|spawn|stop|stop-all]')
+  }
+}
+
+// ── Store commands ───────────────────────────────────────────────────────
+
+async function cmdStore(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'get': {
+      const key = args[1]
+      if (!key) { console.log('Usage: clove store get <key>'); return }
+      const res = await api<any>(cfg.apiPort, `/api/store/${key}`)
+      console.log(res ? JSON.stringify(res, null, 2) : c.dim('Not found'))
+      break
+    }
+    case 'set': {
+      const key = args[1]
+      const value = args[2]
+      if (!key || !value) { console.log('Usage: clove store set <key> <value>'); return }
+      let parsed: any = value
+      try { parsed = JSON.parse(value) } catch {}
+      const res = await api<{ success: boolean }>(cfg.apiPort, '/api/store', 'POST', { key, value: parsed })
+      console.log(res?.success ? c.green(`Stored: ${key}`) : c.red('Failed'))
+      break
+    }
+    default:
+      console.log('Usage: clove store [get|set] <key> [value]')
+  }
+}
+
+// ── Jobs commands ────────────────────────────────────────────────────────
+
+async function cmdJobs(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const ws = args.find(a => a.startsWith('--workspace='))?.split('=')[1] || ''
+      const status = args.find(a => a.startsWith('--status='))?.split('=')[1] || ''
+      const query = [ws ? `workspace_id=${ws}` : '', status ? `status=${status}` : ''].filter(Boolean).join('&')
+      const result = await api<{ jobs: any[]; count: number; queued: number; running: number }>(cfg.apiPort, `/api/jobs${query ? '?' + query : ''}`)
+      if (!result) { console.log(c.red('Failed')); return }
+      console.log('')
+      console.log(c.bold(`  Jobs`) + c.dim(`  queued:${result.queued} running:${result.running} total:${result.count}`))
+      console.log(c.dim('  ' + '─'.repeat(70)))
+      for (const j of (result.jobs || [])) {
+        const st = j.status === 'completed' ? c.green(j.status.padEnd(10))
+                 : j.status === 'failed'    ? c.red(j.status.padEnd(10))
+                 : j.status === 'running'   ? c.cyan(j.status.padEnd(10))
+                 : c.dim(j.status.padEnd(10))
+        const cost = `$${(j.cost_usd ?? 0).toFixed(4)}`
+        console.log(`  ${c.dim(j.id.slice(0,8))} ${st} ${c.yellow((j.agent_name || '').padEnd(16))} ${c.dim(j.goal.slice(0,45).padEnd(46))} ${c.dim(cost)} ${c.dim(`${j.steps_done}s`)}`)
+      }
+      console.log('')
+      break
+    }
+    case 'get':
+    case 'show': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs get <job-id>'); return }
+      const j = await api<any>(cfg.apiPort, `/api/jobs/${id}`)
+      if (!j) { console.log(c.dim('Job not found')); return }
+      console.log('')
+      console.log(c.bold(`  Job: ${j.id}`))
+      console.log(`  Status:  ${j.status}`)
+      console.log(`  Agent:   ${j.agent_name}`)
+      console.log(`  Goal:    ${j.goal}`)
+      console.log(`  Model:   ${j.model}`)
+      console.log(`  Steps:   ${j.steps_done} / ${j.max_steps}`)
+      console.log(`  Tokens:  ${j.tokens ?? 0}`)
+      console.log(`  Cost:    $${(j.cost_usd ?? 0).toFixed(6)}`)
+      if (j.error) console.log(`  Error:   ${c.red(j.error)}`)
+      if (j.result) console.log(`\n  Result:\n  ${j.result.slice(0, 400)}`)
+      console.log('')
+      break
+    }
+    case 'submit':
+    case 'run': {
+      const goal = args.slice(1).filter(a => !a.startsWith('-')).join(' ')
+      if (!goal) { console.log('Usage: clove jobs run "goal" [--model M] [--budget N] [--steps N] [--agent NAME] [--workspace WS]'); return }
+      const modelIdx = args.indexOf('--model');   const model    = modelIdx >= 0 ? args[modelIdx+1] : ''
+      const budgetIdx = args.indexOf('--budget');  const budget   = budgetIdx >= 0 ? parseFloat(args[budgetIdx+1]) : 0.5
+      const stepsIdx = args.indexOf('--steps');   const steps    = stepsIdx >= 0 ? parseInt(args[stepsIdx+1]) : 20
+      const agentIdx = args.indexOf('--agent');   const agent    = agentIdx >= 0 ? args[agentIdx+1] : 'agent'
+      const wsIdx    = args.indexOf('--workspace'); const ws      = wsIdx >= 0 ? args[wsIdx+1] : ''
+      const noMem    = args.includes('--no-memory')
+      const noComp   = args.includes('--no-compress')
+
+      const res = await api<{ id: string; status: string }>(cfg.apiPort, '/api/jobs', 'POST', {
+        goal, agent_name: agent, model, budget_usd: budget, max_steps: steps,
+        workspace_id: ws, compress_context: !noComp, use_memory: !noMem,
+      })
+      if (res?.id) {
+        console.log(c.green(`Submitted: ${res.id}`))
+        console.log(c.dim(`  Watch with: clove jobs get ${res.id}`))
+      } else {
+        console.log(c.red('Failed to submit job'))
+      }
+      break
+    }
+    case 'cancel': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs cancel <job-id>'); return }
+      const res = await api<{ success: boolean }>(cfg.apiPort, `/api/jobs/${id}/cancel`, 'POST')
+      console.log(res?.success ? c.green('Cancelled') : c.red('Failed'))
+      break
+    }
+    case 'retry': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs retry <job-id>'); return }
+      const res = await api<{ id: string }>(cfg.apiPort, `/api/jobs/${id}/retry`, 'POST')
+      if (res?.id) console.log(c.green(`Retried as: ${res.id}`))
+      else console.log(c.red('Failed'))
+      break
+    }
+    case 'watch': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove jobs watch <job-id>'); return }
+      console.log(c.dim(`Watching ${id}... (Ctrl+C to stop)`))
+      const poll = setInterval(async () => {
+        const j = await api<any>(cfg.apiPort, `/api/jobs/${id}`)
+        if (!j) return
+        process.stdout.write(`\r  ${j.status.padEnd(10)} steps=${j.steps_done} cost=$${(j.cost_usd??0).toFixed(4)}  `)
+        if (['completed','failed','cancelled'].includes(j.status)) {
+          clearInterval(poll)
+          console.log('')
+          if (j.result) console.log('\n' + j.result.slice(0, 400))
+          if (j.error)  console.log(c.red('\nError: ' + j.error))
+        }
+      }, 1500)
+      break
+    }
+    default:
+      console.log('Usage: clove jobs [list|get|run|cancel|retry|watch] ...')
+  }
+}
+
+// ── Swarm commands ──────────────────────────────────────────────────────
+
+async function cmdSwarm(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ swarms?: any[] }>(cfg.apiPort, '/api/swarms')
+      const swarms = Array.isArray(result) ? result : (result?.swarms ?? [])
+      if (!swarms.length) { console.log(c.dim('  No swarms.')); return }
+      console.log('')
+      console.log(c.bold('  Swarms'))
+      console.log(c.dim('  ' + '─'.repeat(60)))
+      for (const s of swarms) {
+        const status = s.status === 'running' ? c.cyan(s.status) : c.dim(s.status ?? 'idle')
+        console.log(`  ${c.yellow((s.name ?? '').padEnd(20))} ${status.padEnd(12)} ${c.dim((s.goal ?? '').slice(0, 40))}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm create <name> [--goal "..."] [--budget N]'); return }
+      const goalIdx = args.indexOf('--goal'); const goal = goalIdx >= 0 ? args[goalIdx + 1] : ''
+      const budgetIdx = args.indexOf('--budget'); const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 2.0
+      const result = await api<any>(cfg.apiPort, '/api/swarms', 'POST', { name, goal, budget })
+      if (result?.name) {
+        console.log(c.green(`  Swarm created: ${result.name}`))
+      } else {
+        console.log(c.red('  Failed to create swarm'))
+      }
+      break
+    }
+    case 'start':
+    case 'run': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm start <name>'); return }
+      const result = await api<any>(cfg.apiPort, `/api/swarms/${name}/start`, 'POST', {})
+      if (result?.success || result?.started) {
+        console.log(c.green(`  Swarm started: ${name}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove swarm delete <name>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/swarms/${name}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${name}`) : c.red('  Failed'))
+      break
+    }
+    default:
+      console.log('Usage: clove swarm [list|create|start|delete] ...')
+  }
+}
+
+// ── Schedule commands ────────────────────────────────────────────────────
+
+async function cmdSchedule(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ schedules: any[]; count: number }>(cfg.apiPort, '/api/schedules')
+      const schedules = result?.schedules ?? []
+      if (!schedules.length) { console.log(c.dim('  No schedules.')); return }
+      console.log('')
+      console.log(c.bold('  Schedules'))
+      console.log(c.dim('  ' + '─'.repeat(60)))
+      for (const s of schedules) {
+        const enabled = s.enabled ? c.green('enabled') : c.dim('disabled')
+        console.log(`  ${c.yellow((s.name ?? '').padEnd(20))} ${c.cyan((s.cron ?? '').padEnd(18))} ${enabled}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      // clove schedule create <name> <cron> --goal "..." [--budget N] [--model M]
+      const name = args[1]
+      const cron = args[2]
+      if (!name || !cron) { console.log('Usage: clove schedule create <name> "<cron>" --goal "..." [--budget N] [--model M]'); return }
+      const goalIdx = args.indexOf('--goal'); const goal = goalIdx >= 0 ? args[goalIdx + 1] : ''
+      const budgetIdx = args.indexOf('--budget'); const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 0.5
+      const modelIdx = args.indexOf('--model'); const model = modelIdx >= 0 ? args[modelIdx + 1] : ''
+      if (!goal) { console.log('--goal is required'); return }
+      const result = await api<any>(cfg.apiPort, '/api/schedules', 'POST', {
+        name, cron, run: { goal, budget_usd: budget, ...(model ? { model } : {}) }
+      })
+      if (result?.name) {
+        console.log(c.green(`  Schedule created: ${result.name}`))
+        console.log(c.dim(`  Cron: ${result.cron}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const name = args[1]
+      if (!name) { console.log('Usage: clove schedule delete <name>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/schedules/${name}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${name}`) : c.red(`  Not found: ${name}`))
+      break
+    }
+    default:
+      console.log('Usage: clove schedule [list|create|delete] ...')
+  }
+}
+
+// ── Webhook commands ─────────────────────────────────────────────────────
+
+async function cmdWebhook(args: string[]): Promise<void> {
+  const cfg = loadConfig()
+  if (!await isRunning(cfg.apiPort)) { console.log(c.red('CLOVE not running.')); return }
+
+  const sub = args[0] || 'list'
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const result = await api<{ webhooks: any[]; count: number }>(cfg.apiPort, '/api/webhooks')
+      const webhooks = result?.webhooks ?? []
+      if (!webhooks.length) { console.log(c.dim('  No webhooks.')); return }
+      console.log('')
+      console.log(c.bold('  Webhooks'))
+      console.log(c.dim('  ' + '─'.repeat(70)))
+      for (const w of webhooks) {
+        const enabled = w.enabled ? c.green('enabled') : c.dim('disabled')
+        const events = (w.events ?? []).join(', ')
+        console.log(`  ${c.dim((w.id ?? '').padEnd(16))} ${enabled.padEnd(14)} ${c.yellow((w.url ?? '').slice(0, 35).padEnd(36))} ${c.dim(events)}`)
+      }
+      console.log('')
+      break
+    }
+    case 'create': {
+      // clove webhook create <url> [--events run_complete,agent_error]
+      const url = args[1]
+      if (!url) { console.log('Usage: clove webhook create <url> [--events run_complete,agent_error]'); return }
+      const eventsIdx = args.indexOf('--events')
+      const events = eventsIdx >= 0 ? args[eventsIdx + 1].split(',') : ['run_complete']
+      const result = await api<any>(cfg.apiPort, '/api/webhooks', 'POST', { url, events })
+      if (result?.id) {
+        console.log(c.green(`  Webhook created: ${result.id}`))
+        console.log(c.dim(`  URL: ${result.url}`))
+        console.log(c.dim(`  Events: ${(result.events ?? []).join(', ')}`))
+      } else {
+        console.log(c.red(`  Failed: ${result?.error ?? 'unknown error'}`))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      const id = args[1]
+      if (!id) { console.log('Usage: clove webhook delete <webhook-id>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/webhooks/${id}`, 'DELETE')
+      console.log(result?.success ? c.green(`  Deleted: ${id}`) : c.red(`  Not found: ${id}`))
+      break
+    }
+    default:
+      console.log('Usage: clove webhook [list|create|delete] ...')
   }
 }
 
@@ -916,11 +1792,15 @@ switch (cmd) {
     break
   case 'run':
   case 'r': {
-    const goal = args.slice(1).filter(a => !a.startsWith('-')).join(' ')
-    const budgetIdx = args.indexOf('--budget')
-    const budget = budgetIdx >= 0 ? parseFloat(args[budgetIdx + 1]) : 0.50
-    if (!goal) { console.log('Usage: clove run "your goal" [--budget 0.50]'); break }
-    cmdRun(goal, budget)
+    const goal = args.slice(1).filter(a => !a.startsWith('-') && !a.startsWith('--')).join(' ')
+    const budgetIdx  = args.indexOf('--budget');  const budget  = budgetIdx  >= 0 ? parseFloat(args[budgetIdx+1])  : 0.50
+    const modelIdx   = args.indexOf('--model');   const model   = modelIdx   >= 0 ? args[modelIdx+1]   : ''
+    const stepsIdx   = args.indexOf('--steps');   const steps   = stepsIdx   >= 0 ? parseInt(args[stepsIdx+1])    : 20
+    const agentIdx   = args.indexOf('--agent');   const agent   = agentIdx   >= 0 ? args[agentIdx+1]   : ''
+    const noMemory   = args.includes('--no-memory')
+    const noCompress = args.includes('--no-compress')
+    if (!goal) { console.log('Usage: clove run "goal" [--budget N] [--model M] [--steps N] [--agent NAME] [--no-memory] [--no-compress]'); break }
+    cmdRun(goal, { budget, model, steps, agent, compress: !noCompress, memory: !noMemory })
     break
   }
   case 'fleet':
@@ -930,8 +1810,10 @@ switch (cmd) {
     const n = nIdx >= 0 ? parseInt(args[nIdx + 1]) : 3
     const bIdx = args.indexOf('--budget')
     const b = bIdx >= 0 ? parseFloat(args[bIdx + 1]) : 1.0
-    if (!goal) { console.log('Usage: clove fleet "your goal" [-n 3] [--budget 1.0]'); break }
-    cmdFleet(goal, n, b)
+    const wIdx = args.indexOf('--world')
+    const w = wIdx >= 0 ? args[wIdx + 1] : undefined
+    if (!goal) { console.log('Usage: clove fleet "your goal" [-n 3] [--budget 1.0] [--world name]'); break }
+    cmdFleet(goal, n, b, w)
     break
   }
   case 'templates':
@@ -976,9 +1858,25 @@ switch (cmd) {
   case 'policy':
     cmdPolicy()
     break
-  case 'recall':
+  case 'pipeline':
+  case 'pipe':
+    cmdPipeline(args.slice(1))
+    break
+  case 'analyze':
+  case 'scan':
+    cmdAnalyze(args[1] || '.')
+    break
   case 'memory':
-    cmdRecall()
+  case 'mem':
+    cmdMemory(args.slice(1))
+    break
+  case 'recall':
+    cmdMemory(['recall', ...args.slice(1)])
+    break
+  case 'jobs':
+  case 'job':
+  case 'j':
+    cmdJobs(args.slice(1))
     break
   case 'logs':
   case 'audit': {
@@ -994,6 +1892,32 @@ switch (cmd) {
   case 'c':
     cmdConfig(args.slice(1))
     break
+  case 'daemon':
+    cmdDaemon(args.slice(1))
+    break
+  case 'provider':
+    cmdProvider(args.slice(1))
+    break
+  case 'runtime':
+    cmdRuntime(args.slice(1))
+    break
+  case 'swarm':
+    cmdSwarm(args.slice(1))
+    break
+  case 'schedule':
+    cmdSchedule(args.slice(1))
+    break
+  case 'webhook':
+    cmdWebhook(args.slice(1))
+    break
+  case 'openclaw':
+  case 'oc':
+    cmdOpenclaw(args.slice(1))
+    break
+  case 'store':
+  case 'kv':
+    cmdStore(args.slice(1))
+    break
   case 'build': {
     const scriptPath = new URL('../scripts/postinstall.js', import.meta.url).pathname
     try {
@@ -1005,41 +1929,89 @@ switch (cmd) {
   case '--help':
   case '-h':
     console.log(`
-${c.bold('CLOVE')} — AI Agent Fleet OS
+${c.bold('CLOVE')} — AI Agent Fleet OS  ${c.dim('v0.3.0')}
 
 ${c.bold('Usage:')} clove <command> [options]
 
 ${c.bold('Quick Start:')}
-  ${c.cyan('clove start')}                          Start kernel
-  ${c.cyan('clove connect github')}                  Connect GitHub
-  ${c.cyan('clove agent create pr-reviewer')}        Create an agent
-  ${c.cyan('clove agent enable pr-reviewer')}        Enable it
+  ${c.cyan('clove start')}                                Start kernel
+  ${c.cyan('clove provider set anthropic sk-ant-xxx')}     Add API key
+  ${c.cyan('clove connect github ghp_xxx')}                Connect GitHub (26 MCP tools)
+  ${c.cyan('clove agent create pr-reviewer')}              Create an agent
+  ${c.cyan('clove daemon start pr-reviewer')}              Make it always-on
 
-${c.bold('Commands:')}
-  ${c.cyan('start / stop / status')}                 Kernel lifecycle
-  ${c.cyan('run')} "goal" [--budget N]               Single agent run
-  ${c.cyan('fleet')} "goal" [-n N]                   Parallel fleet run
-  ${c.cyan('connect')} <service>                     Connect external service
-  ${c.cyan('connect list')}                          Show connections
-  ${c.cyan('agent create')} <name>                   Create persistent agent
-  ${c.cyan('agent list')}                            List all agents
-  ${c.cyan('agent enable/disable')} <name>           Toggle agent
-  ${c.cyan('agent run')} <name>                      Manually trigger agent
-  ${c.cyan('agent show')} <name>                     Show agent details
-  ${c.cyan('agent delete')} <name>                   Remove agent
-  ${c.cyan('templates / deploy')}                    Browse & deploy templates
-  ${c.cyan('world list/create/launch')}              Manage worlds
-  ${c.cyan('mcp list/add')}                          MCP server management
-  ${c.cyan('recall / logs / dashboard / config')}    Utilities
+${c.bold('Kernel:')}
+  ${c.cyan('start')}                                      Start kernel + dashboard
+  ${c.cyan('stop')}                                       Stop kernel
+  ${c.cyan('status')}                                     Health, agents, cost, uptime
 
-${c.bold('Services:')} github, slack, filesystem, postgres, notion, google_drive
+${c.bold('Build:')}
+  ${c.cyan('agent')} create|list|show|run|enable|disable|delete
+  ${c.cyan('pipeline')} create|list|show|run|enable|delete
+  ${c.cyan('connect')} <service> [token]                  Connect MCP service
+  ${c.cyan('connect list')}                               Show connections
+  ${c.cyan('templates')}                                  Browse & deploy templates
+
+${c.bold('Operate:')}
+  ${c.cyan('run')} "goal" [--budget N] [--model M] [--steps N]  Single agent run
+    ${c.dim('[--agent NAME] [--no-memory] [--no-compress]')}
+  ${c.cyan('fleet')} "goal" [-n N] [--world W]                Parallel fleet run
+  ${c.cyan('jobs')} list|get|run|cancel|retry|watch            Job queue (async pipelines)
+  ${c.cyan('swarm')} list|create|start|delete                  Multi-agent swarms
+  ${c.cyan('daemon')} start|stop|list|logs|dream|status        Always-on agents
+  ${c.cyan('runtime')} list|run <runtime> "goal"               Spawn Claude Code/Codex
+  ${c.cyan('world')} list|create|launch                        Workspace management
+  ${c.cyan('schedule')} list|create|delete                     Cron schedules
+  ${c.cyan('webhook')} list|create|delete                      Outbound webhooks
+
+${c.bold('Configure:')}
+  ${c.cyan('provider')} set|list|remove <name> [key]      LLM API keys
+  ${c.cyan('mcp')} list|add|remove                        MCP server management
+  ${c.cyan('config')} set|get <key> [value]               CLI configuration
+  ${c.cyan('inference')} show|set <model|max_cost> <val>  Model defaults
+
+${c.bold('Observe:')}
+  ${c.cyan('logs')} [N]                                   Recent audit entries
+  ${c.cyan('memory')} list|recall|write|delete|stats        Three-tier agent memory
+  ${c.cyan('store')} get|set <key> [value]                Key-value store
+  ${c.cyan('policy')}                                     Policy recommendations
+  ${c.cyan('privacy')} <text>                             PII scan
+  ${c.cyan('replay')} status|start|stop                   Event recording
+
+${c.bold('Other:')}
+  ${c.cyan('openclaw')} status|spawn|stop|stop-all        OpenClaw instances
+  ${c.cyan('analyze')} [path]                             Project analysis
+  ${c.cyan('dashboard')}                                  Open dashboard in browser
+  ${c.cyan('scheduler')}                                  Run scheduler daemon
+  ${c.cyan('build')}                                      Build kernel from source
+
+${c.bold('Services:')} github, slack, linear, sentry, pagerduty, notion, postgres, filesystem
+
+${c.bold('Runtimes:')} clove (any model), claude-code (Anthropic), codex (OpenAI), openclaw (any)
 
 ${c.bold('Examples:')}
-  clove connect github ghp_abc123...
-  clove agent create monitoring-bot
-  clove agent run monitoring-bot
-  clove world launch code-health --param project_path=./my-app
-  clove fleet "Compare React vs Vue vs Svelte" -n 3
+  ${c.dim('# Set up providers and connect services')}
+  clove provider set anthropic sk-ant-xxx
+  clove provider set openai sk-xxx
+  clove connect github ghp_abc123
+
+  ${c.dim('# Create and run agents')}
+  clove agent create pr-reviewer
+  clove agent run pr-reviewer
+  clove daemon start pr-reviewer         ${c.dim('# Make it always-on')}
+
+  ${c.dim('# Use different runtimes')}
+  clove runtime run claude-code "Fix the auth bug"
+  clove runtime run codex "Write tests for auth.ts"
+
+  ${c.dim('# Run fleets and pipelines')}
+  clove fleet "Security audit" -n 3 --world security
+  clove pipeline run pr-fixer
+
+  ${c.dim('# Observe and manage')}
+  clove daemon list                      ${c.dim('# See running daemons')}
+  clove daemon logs pr-reviewer          ${c.dim('# Stream daemon activity')}
+  clove daemon dream pr-reviewer         ${c.dim('# Trigger memory consolidation')}
 `)
     break
   default:

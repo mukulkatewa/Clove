@@ -2,6 +2,8 @@
 #include <clove/version.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <curl/curl.h>
+#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -31,6 +33,13 @@ void print_banner() {
 }
 
 int main(int argc, char** argv) {
+    // Must be called once before any curl_easy_init() across all threads
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    // Ignore SIGPIPE — MCP subprocesses may die while we hold their pipe fds.
+    // Without this, any write() to a dead child stdin terminates the kernel.
+    signal(SIGPIPE, SIG_IGN);
+
     print_banner();
 
     // Load .env file if present (check current dir, then parent)
@@ -62,6 +71,11 @@ int main(int argc, char** argv) {
     const char* api_key_env = getenv("CLOVE_API_KEY");
     if (api_key_env && api_key_env[0]) {
         config.api_key = api_key_env;
+    }
+    // Railway (and similar PaaS) set PORT at runtime — use it if present
+    const char* port_env = getenv("PORT");
+    if (port_env && port_env[0]) {
+        config.api_port = static_cast<uint16_t>(std::stoi(port_env));
     }
 
     for (int i = 1; i < argc; i++) {
@@ -152,5 +166,6 @@ int main(int argc, char** argv) {
 
     std::cout << "\n    " << term::YELLOW << "⟳" << term::RESET
               << "  Shutdown complete.\n\n";
+    curl_global_cleanup();
     return 0;
 }

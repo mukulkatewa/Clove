@@ -105,6 +105,9 @@ This creates `~/.clove/agents/pr-reviewer/agent.json`. Edit it:
 | `permissions` | Sandbox constraints — filesystem paths, domains, capabilities |
 | `budget.per_run` | Max cost per trigger in USD |
 | `budget.daily_max` | Max daily spend in USD |
+| `runtime` | Agent runtime: `clove` (default), `claude-code`, `codex`, `openclaw` |
+| `workspace_id` | World/workspace isolation scope (optional) |
+| `daemon` | Daemon config — see Daemon Agents section below |
 
 ### Trigger Types
 
@@ -156,7 +159,7 @@ clove logs 20
 clove status
 ```
 
-Or use the dashboard at `http://localhost:3000`.
+Or use the dashboard at `http://localhost:8080/dashboard`.
 
 ## Example Agents
 
@@ -209,6 +212,38 @@ Or use the dashboard at `http://localhost:3000`.
   "budget": { "per_run": 0.10, "daily_max": 5.00 }
 }
 ```
+
+## Daemon Agents (Always-On)
+
+Convert any agent to a daemon — an always-on process with a tick loop:
+
+```bash
+clove daemon start pr-reviewer
+clove daemon logs pr-reviewer     # tail activity log
+clove daemon dream pr-reviewer    # trigger memory consolidation
+clove daemon stop pr-reviewer
+```
+
+Add a `daemon` block to your agent definition to configure the tick behavior:
+
+```json
+{
+  "name": "incident-monitor",
+  "daemon": {
+    "enabled": true,
+    "tick_interval_s": 60,
+    "subscriptions": ["github.events", "slack.mentions"],
+    "dream": {
+      "enabled": true,
+      "idle_ticks_before_dream": 5
+    }
+  }
+}
+```
+
+Daemon states: `sleeping` (between ticks) → `acting` (running task) → `dreaming` (memory consolidation).
+
+See [DAEMON_AGENTS_PLAN.md](DAEMON_AGENTS_PLAN.md) for full architecture details.
 
 ## Using Templates Instead
 

@@ -252,7 +252,9 @@ size_t MemoryBlockStore::size() const {
 bool MemoryBlockStore::can_read(const MemoryBlock& block, uint32_t agent_id) const {
     if (block.owner_agent_id == agent_id) return true;
     if (block.access == MemoryAccess::PRIVATE) return false;
-    // SHARED_READ or SHARED_READWRITE: check if agent is in shared_with
+    // SHARED_READ / SHARED_READWRITE: visible to all agents
+    if (block.access == MemoryAccess::SHARED_READ ||
+        block.access == MemoryAccess::SHARED_READWRITE) return true;
     return block.shared_with.count(agent_id) > 0;
 }
 

@@ -7,8 +7,8 @@
  * Builds the kernel binary and places it at ~/.clove/bin/clove_kernel
  */
 
-import { execSync, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir, platform, cpus } from 'node:os'
 
@@ -115,6 +115,15 @@ function run() {
   buildFromSource(sourceDir)
 }
 
+function copyDir(src, dst) {
+  mkdirSync(dst, { recursive: true })
+  for (const entry of readdirSync(src)) {
+    const s = join(src, entry), d2 = join(dst, entry)
+    if (statSync(s).isDirectory()) copyDir(s, d2)
+    else copyFileSync(s, d2)
+  }
+}
+
 function buildFromSource(sourceDir) {
   const buildDir = join(sourceDir, 'build')
   const cores = cpus().length
@@ -147,6 +156,13 @@ function buildFromSource(sourceDir) {
       copyFileSync(builtBinary, KERNEL_PATH)
       execSync(`chmod +x ${KERNEL_PATH}`)
 
+      // Copy templates to ~/.clove/templates/
+      const srcTemplates = join(sourceDir, 'templates')
+      const dstTemplates = join(CLOVE_DIR, 'templates')
+      if (existsSync(srcTemplates)) {
+        copyDir(srcTemplates, dstTemplates)
+      }
+
       console.log('')
       console.log(g(b('  Kernel installed!')))
       console.log(d(`  Binary: ${KERNEL_PATH}`))
@@ -176,7 +192,7 @@ function buildFromGit() {
   console.log(c('  Cloning CLOVE...'))
   try {
     if (!existsSync(tmpDir)) {
-      execSync(`git clone --depth 1 --branch v2 https://github.com/aniiiiXD/Clove.git ${tmpDir}`, {
+      execSync(`git clone --depth 1 https://github.com/aniiiiXD/Clove.git ${tmpDir}`, {
         stdio: 'inherit',
       })
     } else {

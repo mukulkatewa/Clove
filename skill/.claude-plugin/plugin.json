@@ -1,0 +1,12 @@
+{
+  "name": "clove",
+  "version": "1.0.0",
+  "description": "Use the CLOVE agent kernel — spawn agents, run jobs, manage memory, orchestrate swarms, and call MCP tools.",
+  "skills": [
+    {
+      "name": "clove",
+      "path": "../skill.md",
+      "user-invocable": true
+    }
+  ]
+}

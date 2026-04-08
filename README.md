@@ -3,7 +3,7 @@
 **An operating system for AI agents.** One binary. Agents get process isolation, shared memory, cost tracking, PII filtering, and a REST API. Run one agent or a fleet of 20 in parallel.
 
 ```
-52ms startup  |  12.9 MB RAM  |  86 syscalls  |  71 API endpoints  |  165 tests  |  C++23
+52ms startup  |  12.9 MB RAM  |  86 syscalls  |  65 API endpoints  |  165 tests  |  C++23
 ```
 
 ---
@@ -186,7 +186,7 @@ Every LLM call OpenClaw makes routes through CLOVE — cost tracked, PII filtere
 
 ---
 
-## API (71 endpoints)
+## API (65 endpoints)
 
 Key endpoints:
 
@@ -271,7 +271,7 @@ Integrations:
   --a2a                   Enable A2A bridge
 ```
 
-Environment variables: `OPENROUTER_API_KEY`, `CLOVE_API_KEY` (also reads `.env`).
+Environment variables: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `CLOVE_API_KEY` (also reads `.env`).
 
 ---
 
@@ -292,7 +292,7 @@ clove-v2/
     + agents, ipc, reactor, worlds
   integrations/
     openclaw-plugin/       OpenClaw plugin (953 LOC TypeScript)
-    mcp-server/            MCP server (359 LOC TypeScript)
+  mcp-server/              MCP server (1,030 LOC TypeScript, 60+ tools, stdio + HTTP)
   dashboard/               React dashboard (1,480 LOC, 8 pages)
   sdk/python/              Python SDK (878 LOC)
   benchmarks/              CLOVE vs OpenShell benchmarks
@@ -319,7 +319,7 @@ cd build && ctest --output-on-failure
 | TypeScript LOC | 2,792 |
 | Total LOC | ~26,000 |
 | Syscalls | 86 |
-| API endpoints | 71 |
+| API endpoints | 65 |
 | Tests | 165 |
 | Startup | 52ms |
 | Memory (base) | 12.9 MB |
@@ -327,6 +327,70 @@ cd build && ctest --output-on-failure
 | LLM proxy overhead | 10ms |
 
 ---
+
+## Async job queue
+
+Submit long-running jobs and poll for results. Supports priority and `depends_on` chaining:
+
+```bash
+# Submit a job
+curl -X POST localhost:8080/api/jobs -d '{
+  "goal": "Analyze all open PRs and write a report",
+  "agent_name": "pr-analyst",
+  "budget_usd": 1.00,
+  "priority": 1
+}'
+# → { "job_id": "job_abc123", "status": "queued" }
+
+# Poll for result
+curl localhost:8080/api/jobs/job_abc123
+
+# Chain a dependent job
+curl -X POST localhost:8080/api/jobs -d '{
+  "goal": "Post the PR report to Slack",
+  "depends_on": "job_abc123"
+}'
+```
+
+## Daemon agents
+
+Always-on agents that run a tick loop — checking subscriptions, acting when triggered, consolidating memory during idle:
+
+```bash
+clove daemon start incident-monitor   # starts daemon
+clove daemon logs incident-monitor    # tail activity log
+clove daemon dream incident-monitor   # trigger memory consolidation
+```
+
+States: `sleeping` (between ticks) → `acting` (running task) → `dreaming` (memory consolidation).
+
+## Deploy
+
+```bash
+# Docker Compose (kernel + MCP server)
+cd deploy && docker-compose up
+
+# Railway (kernel service)
+# railway.toml is at repo root — points to deploy/Dockerfile
+# Set env vars: OPENROUTER_API_KEY, ANTHROPIC_API_KEY, CLOVE_API_KEY
+
+# MCP server on Railway
+# mcp-server/railway.json — points to mcp-server/Dockerfile
+# Set env vars: PORT=3001, CLOVE_API_URL=<kernel-internal-url>, CLOVE_MCP_KEY=<secret>
+```
+
+Users connect Claude Code to the hosted MCP server:
+
+```json
+{
+  "mcpServers": {
+    "clove": {
+      "url": "https://your-mcp.up.railway.app/mcp",
+      "headers": { "Authorization": "Bearer YOUR_KEY" }
+    }
+  }
+}
+```
 
 ## License
 

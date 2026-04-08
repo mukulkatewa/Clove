@@ -11,6 +11,7 @@ namespace clove {
 
 // Forward declarations
 class OpenRouterClient;
+class AnthropicClient;
 class InferenceGateway;
 class PrivacyFilter;
 class AuditLogger;
@@ -18,6 +19,7 @@ class StateStore;
 class ArtifactStore;
 class ChainStore;
 class MemoryBlockStore;
+class MemoryManager;
 class McpBridge;
 class ContextAssembler;
 class PermissionsStore;
@@ -39,6 +41,10 @@ struct RunConfig {
     std::string chain_id;        // If empty, engine creates one
     int max_depth = 3;           // Max sub-agent nesting depth
     int current_depth = 0;       // Current nesting level (0 = top-level)
+    std::string workspace_id;    // If set, output is scoped to this workspace
+    std::string run_id;          // Unique run identifier; auto-generated if empty
+    bool compress_context = true; // Run StepCompressor on tool outputs before context injection
+    bool use_memory       = true; // Use three-tier MemoryManager (remember/recall tools)
 };
 
 /// Result of a completed run.
@@ -62,6 +68,7 @@ class RunEngine {
 public:
     RunEngine(
         OpenRouterClient& openrouter,
+        AnthropicClient*  anthropic,   // nullable — used for claude-* models
         InferenceGateway& gateway,
         PrivacyFilter& privacy,
         AuditLogger& audit,
@@ -69,7 +76,8 @@ public:
         PermissionsStore& permissions,
         ArtifactStore* artifacts,        // nullable
         ChainStore* chains,              // nullable
-        MemoryBlockStore* memory,        // nullable
+        MemoryBlockStore* memory,        // nullable (legacy)
+        MemoryManager*    memory_mgr,    // nullable — three-tier memory system
         McpBridge* mcp,                  // nullable
         ContextAssembler* assembler,     // nullable
         const KernelConfig& config
@@ -84,6 +92,7 @@ public:
 
 private:
     OpenRouterClient& openrouter_;
+    AnthropicClient*  anthropic_;
     InferenceGateway& gateway_;
     PrivacyFilter& privacy_;
     AuditLogger& audit_;
@@ -92,11 +101,13 @@ private:
     ArtifactStore* artifacts_;
     ChainStore* chains_;
     MemoryBlockStore* memory_;
+    MemoryManager*    memory_mgr_;
     McpBridge* mcp_;
     ContextAssembler* assembler_;
     const KernelConfig& config_;
     std::atomic<bool> cancelled_{false};
     uint32_t agent_id_ = 0;       // set per-run for permission checks
+    int current_step_ = 0;        // current loop iteration — used by memory scoring
     const RunConfig* active_cfg_ = nullptr;  // current run config (for sub-agent spawning)
 
     nlohmann::json build_tools(const std::vector<std::string>& allowed);
@@ -107,8 +118,9 @@ private:
     // Real tool implementations
     std::string tool_read_file(const std::string& path);
     std::string tool_write_file(const std::string& path, const std::string& content);
+    std::string tool_edit_file(const std::string& path, const std::string& old_string, const std::string& new_string);
     std::string tool_exec(const std::string& command);
-    std::string tool_http(const std::string& url, const std::string& method, const std::string& body);
+    std::string tool_http(const std::string& url, const std::string& method, const std::string& body, const nlohmann::json& headers = nlohmann::json::object());
     std::string tool_search(const std::string& query, const std::string& model, double& cost, int& tokens);
     std::string tool_mcp_call(const std::string& server, const std::string& tool, const nlohmann::json& args);
     std::string tool_delegate(const nlohmann::json& args, const std::string& model, double& cost, int& tokens);
