@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLOVE — Memory Graph</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0b0f; --surface: rgba(255,255,255,0.04); --border: rgba(255,255,255,0.07);
+    --text: #c8d0dc; --muted: #4a5568;
+    --accent: #e8924a; --blue: #6ba3f5; --teal: #3ecfb8; --gray: #475569;
+  }
+  html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); font-family:-apple-system,'SF Pro Display',system-ui,sans-serif; }
+
+  #topbar {
+    position:fixed; inset:0 0 auto 0; z-index:10; height:44px;
+    display:flex; align-items:center; gap:12px; padding:0 18px;
+    background:rgba(10,11,15,0.92); backdrop-filter:blur(20px);
+    border-bottom:1px solid var(--border);
+  }
+  .logo { font-size:12px; font-weight:600; letter-spacing:-0.01em; color:var(--text); }
+  .logo em { color:var(--accent); font-style:normal; }
+  .vsep { width:1px; height:16px; background:var(--border); }
+  .tag { font-size:10px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); }
+  .badge {
+    margin-left:auto; font-size:9px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
+    padding:2px 8px; border-radius:20px;
+    background:rgba(62,207,184,0.1); color:var(--teal); border:1px solid rgba(62,207,184,0.2);
+  }
+  .badge.demo { background:rgba(232,146,74,0.1); color:var(--accent); border-color:rgba(232,146,74,0.2); }
+
+  #statsbar {
+    position:fixed; top:44px; left:0; right:0; z-index:9; height:32px;
+    display:flex; align-items:center; gap:16px; padding:0 18px;
+    background:rgba(10,11,15,0.7); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--border);
+  }
+  .stat { font-size:10px; color:var(--muted); display:flex; align-items:center; gap:4px; }
+  .stat b { font-weight:600; color:var(--text); }
+  .sdot { width:6px; height:6px; border-radius:50%; }
+  #status-msg { margin-left:auto; font-size:10px; color:var(--muted); }
+
+  #cy { position:fixed; inset:76px 0 0 0; }
+
+  /* Panel */
+  #panel {
+    position:fixed; top:76px; right:0; bottom:0; width:272px; z-index:10;
+    background:rgba(10,11,15,0.97); backdrop-filter:blur(24px);
+    border-left:1px solid var(--border);
+    transform:translateX(100%); transition:transform 220ms cubic-bezier(0.4,0,0.2,1);
+    overflow-y:auto;
+  }
+  #panel.open { transform:translateX(0); }
+  #panel-body { padding:16px 16px 32px; }
+  #panel-close {
+    position:sticky; top:10px; float:right; margin:10px 10px 0 0;
+    width:22px; height:22px; border-radius:5px;
+    background:rgba(255,255,255,0.06); border:1px solid var(--border);
+    color:var(--muted); cursor:pointer; font-size:11px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #panel-close:hover { color:var(--text); }
+  #pkind {
+    display:inline-flex; align-items:center;
+    font-size:9px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase;
+    padding:3px 8px; border-radius:20px; margin-bottom:10px;
+  }
+  #pname { font-size:15px; font-weight:600; letter-spacing:-0.02em; color:var(--text); line-height:1.3; margin-bottom:6px; }
+  #ptags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:14px; }
+  #ptags span { font-size:9px; color:var(--muted); background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:2px 6px; }
+  .plabel { font-size:9px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
+  #pcontent { font-size:11px; line-height:1.7; color:#7a8899; background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:7px; padding:10px; margin-bottom:14px; }
+  .nbr {
+    display:flex; align-items:center; gap:7px; padding:5px 0;
+    border-bottom:1px solid rgba(255,255,255,0.04);
+    font-size:10px; color:#64748b; cursor:pointer;
+  }
+  .nbr:last-child { border-bottom:none; }
+  .nbr:hover { color:var(--text); }
+  .nbr-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .nbr-kind { font-size:9px; color:#334155; flex-shrink:0; }
+
+  /* Legend */
+  #legend {
+    position:fixed; bottom:18px; left:14px; z-index:10;
+    background:rgba(10,11,15,0.88); backdrop-filter:blur(16px);
+    border:1px solid var(--border); border-radius:10px; padding:10px 13px;
+    display:flex; flex-direction:column; gap:5px;
+  }
+  .lsec { font-size:8px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); margin:4px 0 1px; }
+  .lsec:first-child { margin-top:0; }
+  .lrow { display:flex; align-items:center; gap:6px; font-size:10px; color:#64748b; }
+  .ldot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+  /* Controls */
+  #controls {
+    position:fixed; bottom:18px; right:14px; z-index:10;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .ctrl {
+    width:28px; height:28px; border-radius:7px;
+    background:rgba(10,11,15,0.88); backdrop-filter:blur(16px);
+    border:1px solid var(--border); color:var(--muted);
+    cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center;
+  }
+  .ctrl:hover { color:var(--text); border-color:rgba(255,255,255,0.14); }
+
+  /* Tooltip */
+  #tip {
+    position:fixed; z-index:20; pointer-events:none;
+    background:rgba(10,11,15,0.96); border:1px solid var(--border);
+    border-radius:7px; padding:7px 10px; font-size:10px; color:#7a8899;
+    max-width:200px; line-height:1.4; opacity:0; transition:opacity 80ms;
+  }
+  #tip.show { opacity:1; }
+  #tip strong { display:block; color:var(--text); font-size:11px; font-weight:600; margin-bottom:1px; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div class="logo"><em>CLOVE</em> OS</div>
+  <div class="vsep"></div>
+  <div class="tag">Memory Graph</div>
+  <div class="badge" id="badge">live</div>
+</div>
+
+<div id="statsbar">
+  <div class="stat"><div class="sdot" style="background:#3ecfb8"></div>Agents <b id="s-a">—</b></div>
+  <div class="stat"><div class="sdot" style="background:#e8924a"></div>System <b id="s-s">—</b></div>
+  <div class="stat"><div class="sdot" style="background:#6ba3f5"></div>Core <b id="s-c">—</b></div>
+  <div class="stat"><div class="sdot" style="background:#475569"></div>Recall <b id="s-r">—</b></div>
+  <div id="status-msg">Loading…</div>
+</div>
+
+<div id="cy"></div>
+
+<div id="panel">
+  <button id="panel-close">✕</button>
+  <div id="panel-body">
+    <div id="pkind"></div>
+    <div id="pname"></div>
+    <div id="ptags"></div>
+    <div class="plabel">Content</div>
+    <div id="pcontent"></div>
+    <div class="plabel" id="pnlabel">Connections</div>
+    <div id="pnbrs"></div>
+  </div>
+</div>
+
+<div id="legend">
+  <div class="lsec">Nodes</div>
+  <div class="lrow"><div class="ldot" style="background:#3ecfb8"></div>Agent</div>
+  <div class="lrow"><div class="ldot" style="background:#e8924a"></div>System memory</div>
+  <div class="lrow"><div class="ldot" style="background:#6ba3f5"></div>Core memory</div>
+  <div class="lrow"><div class="ldot" style="background:#475569"></div>Recall memory</div>
+  <div class="lrow"><div class="ldot" style="background:#a78bfa"></div>Private</div>
+</div>
+
+<div id="controls">
+  <button class="ctrl" id="cin">+</button>
+  <button class="ctrl" id="cout">−</button>
+  <button class="ctrl" id="cfit">⊙</button>
+</div>
+
+<div id="tip"></div>
+
+<!-- Load Cytoscape core only — no plugins needed -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js"></script>
+<script>
+const KERNEL = "https://kernel-production-96de.up.railway.app";
+const KEY    = "clove-prod-70f36e07a895a89c1fd82b84ec35a4d7";
+
+const COL = { agent:"#3ecfb8", system:"#e8924a", core:"#6ba3f5", recall:"#475569", private:"#a78bfa" };
+
+function nodeColor(kind, type, access) {
+  if (kind === "agent") return COL.agent;
+  if (access === "private") return COL.private;
+  return COL[type] || COL.recall;
+}
+
+async function fetchData() {
+  const h = { Authorization: `Bearer ${KEY}` };
+  const [mr, ar] = await Promise.all([
+    fetch(`${KERNEL}/api/memory`, { headers: h }),
+    fetch(`${KERNEL}/api/agent-defs`, { headers: h }),
+  ]);
+  const mj = await mr.json();
+  const aj = await ar.json();
+  return {
+    memories: Array.isArray(mj) ? mj : (mj.memories || []),
+    agents:   Array.isArray(aj) ? aj : (aj.agent_defs || []),
+  };
+}
+
+// ── Build elements ─────────────────────────────────────────────────────────────
+function buildElements(memories, agents) {
+  const nodes = [], edges = [];
+
+  // Concentric level: agents=4 (center), system=3, core=2, recall=1 (outer)
+  for (const a of agents) {
+    nodes.push({ data: {
+      id: `a:${a.name}`, label: a.name,
+      kind: "agent", type: "agent",
+      color: COL.agent, size: 18,
+      level: 4, raw: a,
+    }});
+  }
+
+  for (const m of memories) {
+    const key  = m.name || m.id || `m_${Math.random()}`;
+    const type = (m.type || "recall").toLowerCase();
+    const col  = nodeColor("memory", type, m.access || "");
+    const sz   = type === "system" ? 12 : type === "core" ? 9 : 6;
+    const lvl  = type === "system" ? 3 : type === "core" ? 2 : 1;
+    nodes.push({ data: {
+      id: `m:${key}`, label: key.replace(/-/g, " "),
+      kind: "memory", type, access: m.access || "shared_read",
+      color: col, size: sz, level: lvl, raw: m,
+    }});
+  }
+
+  // Ownership edges (lean - agent → its specific memory)
+  const owns = {
+    researcher:    p => p.startsWith("research-"),
+    analyst:       p => p.startsWith("analysis-"),
+    planner:       p => p.startsWith("plan-"),
+    writer:        p => ["b2b-pitch","ralph-loop-impl","edge-install","multi-user-plan"].includes(p),
+    critic:        p => ["accuracy-thesis","analysis-gaps","analysis-accuracy"].includes(p),
+    "memory-keeper": () => false,
+    synthesizer:   p => ["context-graph-thesis","agentic-stats","icp-profile","technical-moat","competitor-analysis","product-strategy"].includes(p),
+  };
+
+  for (const a of agents) {
+    const test = owns[a.name];
+    if (!test) continue;
+    for (const m of memories) {
+      const key = m.name || m.id || "";
+      if (test(key)) {
+        edges.push({ data: { id: `e_own_${a.name}_${key}`, source: `a:${a.name}`, target: `m:${key}`, kind: "owns" }});
+      }
+    }
+  }
+
+  // memory-keeper → SYSTEM blocks (only keeper "holds" system, keeps visual clean)
+  const sysMems = memories.filter(m => (m.type||"").toLowerCase() === "system");
+  for (const m of sysMems) {
+    const key = m.name || m.id || "";
+    edges.push({ data: { id: `e_sys_${key}`, source: `a:memory-keeper`, target: `m:${key}`, kind: "system" }});
+  }
+
+  // memory-keeper → all shared_readwrite (non-system)
+  for (const m of memories) {
+    if ((m.access||"").includes("readwrite") && (m.type||"").toLowerCase() !== "system") {
+      const key = m.name || m.id || "";
+      // skip if already owned by another agent
+      const alreadyOwned = edges.some(e => e.data.target === `m:${key}` && e.data.kind === "owns");
+      if (!alreadyOwned) {
+        edges.push({ data: { id: `e_mk_${key}`, source: `a:memory-keeper`, target: `m:${key}`, kind: "owns" }});
+      }
+    }
+  }
+
+  // synthesizer → other agents
+  for (const a of agents) {
+    if (a.name !== "synthesizer") {
+      edges.push({ data: { id: `e_syn_${a.name}`, source: `a:synthesizer`, target: `a:${a.name}`, kind: "agent" }});
+    }
+  }
+
+  // private → memory-keeper only
+  for (const m of memories.filter(m => m.access === "private")) {
+    const key = m.name || m.id || "";
+    edges.push({ data: { id: `e_priv_${key}`, source: `a:memory-keeper`, target: `m:${key}`, kind: "owns" }});
+  }
+
+  // recall → analyst (shared recall blocks not owned elsewhere)
+  for (const m of memories) {
+    const key = m.name || m.id || "";
+    if ((m.type||"").toLowerCase() === "recall" && m.access !== "private") {
+      const alreadyOwned = edges.some(e => e.data.target === `m:${key}`);
+      if (alreadyOwned) continue;
+      edges.push({ data: { id: `e_rc_${key}`, source: `a:analyst`, target: `m:${key}`, kind: "recall" }});
+    }
+  }
+
+  return { nodes, edges };
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+(async () => {
+  const msg   = document.getElementById("status-msg");
+  const badge = document.getElementById("badge");
+
+  // Verify Cytoscape loaded
+  if (typeof cytoscape === "undefined") {
+    msg.textContent = "Error: Cytoscape failed to load";
+    msg.style.color = "#f87171";
+    return;
+  }
+
+  let memories, agents;
+
+  try {
+    ({ memories, agents } = await fetchData());
+    if (!memories.length || !agents.length) throw new Error("empty response");
+    msg.textContent = `Live · ${agents.length} agents · ${memories.length} blocks`;
+    msg.style.color = "#3ecfb8";
+  } catch (err) {
+    console.warn("Kernel fetch failed, using demo data:", err);
+    agents = [
+      { name:"researcher",    model:"claude-haiku-4-5", persona:"Deep research agent. Gathers facts, cites sources, builds knowledge systematically.", tools:["remember","recall","search"] },
+      { name:"analyst",       model:"claude-haiku-4-5", persona:"Data analyst. Finds patterns, draws conclusions, synthesizes research into insights.", tools:["remember","recall","artifact"] },
+      { name:"writer",        model:"claude-haiku-4-5", persona:"Technical writer. Turns analysis into clear, structured documents.", tools:["remember","recall","artifact"] },
+      { name:"critic",        model:"claude-haiku-4-5", persona:"Critical reviewer. Finds flaws, gaps, and inconsistencies in plans.", tools:["remember","recall"] },
+      { name:"planner",       model:"claude-haiku-4-5", persona:"Strategic planner. Breaks complex goals into executable steps.", tools:["remember","recall","artifact"] },
+      { name:"memory-keeper", model:"claude-haiku-4-5", persona:"Maintains shared knowledge. Consolidates findings and keeps memory clean.", tools:["remember","recall","share"] },
+      { name:"synthesizer",   model:"claude-haiku-4-5", persona:"Synthesizes the work of all agents into a final coherent output.", tools:["remember","recall","artifact"] },
+    ];
+    memories = [
+      { name:"team-mission",        type:"system", access:"shared_read",      content:"We are building CLOVE — an AI agent OS. Our mission: make agents production-ready for businesses." },
+      { name:"coding-standards",    type:"system", access:"shared_read",      content:"C++23, clang-format, no raw pointers, RAII everywhere, test everything with Catch2." },
+      { name:"architecture-rules",  type:"system", access:"shared_read",      content:"Kernel owns the runtime. Libs are stateless. API is the public surface. Never bypass the syscall router." },
+      { name:"agent-protocols",     type:"system", access:"shared_read",      content:"Agents communicate via IPC only. No direct memory access between agents. Use share() for cross-agent memory." },
+      { name:"market-research",     type:"core",   access:"shared_read",      content:"Agent infra market: $6.4B VC in 2025. 46% of YC S25. Key gap: reliability and audit." },
+      { name:"competitor-analysis", type:"core",   access:"shared_read",      content:"Mem0: $24M. Composio: $29M. Zep: temporal KG. Nobody has full stack kernel." },
+      { name:"product-strategy",    type:"core",   access:"shared_readwrite", content:"B2B focus. Agency model now. Product in May. Target: CTOs at 100-1000 person tech companies." },
+      { name:"technical-moat",      type:"core",   access:"shared_read",      content:"C++ kernel = 15MB binary. 86 syscalls. Runs on RPi. 300+ model routing. Full audit." },
+      { name:"analysis-gaps",       type:"core",   access:"shared_readwrite", content:"CLOVE gaps: no verifier layer, no per-user isolation, no embedding search, no memory TTL." },
+      { name:"analysis-strengths",  type:"core",   access:"shared_readwrite", content:"CLOVE strengths: C++ speed, 86 syscalls, audit trail, sandbox, multi-model routing." },
+      { name:"analysis-timing",     type:"core",   access:"shared_read",      content:"Market timing: 62% experimenting, only 23% scaling. The scaling gap IS the product." },
+      { name:"analysis-cost",       type:"core",   access:"shared_readwrite", content:"Per-agent cost tracking live. Multi-model routing saves ~40% vs GPT-4o only." },
+      { name:"analysis-accuracy",   type:"core",   access:"shared_readwrite", content:"Accuracy gaps: self-reported completion, no confidence scoring. Ralph Loop fixes this." },
+      { name:"plan-april",          type:"core",   access:"shared_readwrite", content:"April: close first 3 clients via agency model. Demo: fleet + memory graph + audit." },
+      { name:"plan-may",            type:"core",   access:"shared_readwrite", content:"May: multi-user auth, API key generation UI, workspace isolation, verifier layer." },
+      { name:"plan-hackathon",      type:"core",   access:"shared_read",      content:"Kaggle Gemma 4 Good Hackathon: May 18 deadline. CLOVE Edge on RPi. $200K prize." },
+      { name:"research-gemma4",     type:"core",   access:"shared_read",      content:"Gemma 4: 2B/4B edge variants, 31B dense. 140 languages. Native function calling." },
+      { name:"research-rpi",        type:"core",   access:"shared_read",      content:"RPi 5 8GB: runs Gemma 4 E4B at ~3-5 tok/s via Ollama. Power: ~5W. Cost: $80." },
+      { name:"research-rag",        type:"core",   access:"shared_read",      content:"GraphRAG improves multi-hop reasoning 4.5% over vector RAG. Zep uses temporal edges." },
+      { name:"research-ralph-loop", type:"core",   access:"shared_read",      content:"Ralph Loop: externalize completion to machine verifier. State on disk not in context." },
+      { name:"railway-urls",        type:"recall", access:"shared_read",      content:"Kernel: https://kernel-production-96de.up.railway.app | MCP: https://mcp-production-07a6.up.railway.app/mcp" },
+      { name:"npm-package",         type:"recall", access:"shared_read",      content:"npm: @cloveos/mcp-server v2.0.2 | @cloveos/cli v0.1.1. Published." },
+      { name:"api-key-prod",        type:"recall", access:"private",          content:"CLOVE_API_KEY: clove-prod-70f36e07a895a89c1fd82b84ec35a4d7" },
+      { name:"syscall-map",         type:"recall", access:"shared_read",      content:"86 syscalls across 22 modules: CORE, AGENTS, IPC, STATE, PERMISSIONS, NETWORK..." },
+      { name:"memory-tiers",        type:"recall", access:"shared_read",      content:"Tier 1: LLM context. Tier 2: kernel RAM (<1ms). Tier 3: SQLite WAL (1-10ms)." },
+      { name:"graph-view-plan",     type:"recall", access:"shared_readwrite", content:"Memory graph visualization: nodes=artifacts+memory+agents+chains. D3.js force layout." },
+      { name:"ralph-loop-impl",     type:"recall", access:"shared_readwrite", content:"Ralph Loop in CLOVE: add post-run verifier that re-queues job if criteria not met." },
+      { name:"b2b-pitch",           type:"recall", access:"shared_read",      content:"Pitch: We don't replace your agents. We make them production-ready." },
+      { name:"context-graph-thesis",type:"recall", access:"shared_read",      content:"Foundation Capital: context graphs = next trillion-dollar platform. Decision traces = moat." },
+      { name:"agentic-stats",       type:"recall", access:"shared_read",      content:"$6.42B VC into agents in 2025. Goldman: 60% of software profits to agents by 2030." },
+      { name:"icp-profile",         type:"recall", access:"shared_read",      content:"ICP: 100-1000 person tech company, agents in prod, CTO makes the call. $30K-$150K/year." },
+      { name:"accuracy-thesis",     type:"recall", access:"shared_readwrite", content:"Accuracy > cost > speed. One wrong agent action costs more than a year of API bills." },
+      { name:"robots-ros2",         type:"recall", access:"shared_readwrite", content:"Robotics: CLOVE kernel as robot brain runtime. ROS2 bridge. C++ on both sides." },
+    ];
+    badge.textContent = "demo";
+    badge.className = "badge demo";
+    msg.textContent = `Demo · ${agents.length} agents · ${memories.length} blocks`;
+    msg.style.color = "#e8924a";
+  }
+
+  document.getElementById("s-a").textContent = agents.length;
+  document.getElementById("s-s").textContent = memories.filter(m => (m.type||"").toLowerCase() === "system").length;
+  document.getElementById("s-c").textContent = memories.filter(m => (m.type||"").toLowerCase() === "core").length;
+  document.getElementById("s-r").textContent = memories.filter(m => (m.type||"").toLowerCase() === "recall").length;
+
+  const { nodes, edges } = buildElements(memories, agents);
+
+  // ── Init Cytoscape ──────────────────────────────────────────────────────────
+  const cy = cytoscape({
+    container: document.getElementById("cy"),
+    elements: { nodes, edges },
+    minZoom: 0.1, maxZoom: 8,
+    wheelSensitivity: 0.35,
+    boxSelectionEnabled: false,
+    style: [
+      {
+        selector: "node",
+        style: {
+          "width":  "data(size)", "height": "data(size)",
+          "background-color": "data(color)",
+          "background-opacity": 0.85,
+          "border-width": 0,
+          "label": "data(label)",
+          "font-family": "-apple-system, SF Pro Display, system-ui, sans-serif",
+          "font-size": 8,
+          "font-weight": 400,
+          "color": "rgba(100,116,139,0.8)",
+          "text-valign": "bottom", "text-halign": "center",
+          "text-margin-y": 5,
+          "text-wrap": "none",
+          "min-zoomed-font-size": 5,
+        },
+      },
+      {
+        selector: "node[kind='agent']",
+        style: { "font-size": 9, "font-weight": 500, "color": "rgba(62,207,184,0.9)", "text-margin-y": 7 },
+      },
+      {
+        selector: "node[type='system']",
+        style: { "color": "rgba(232,146,74,0.8)" },
+      },
+      {
+        selector: "node[type='core']",
+        style: { "color": "rgba(107,163,245,0.7)" },
+      },
+      {
+        selector: "node.hl",
+        style: { "background-opacity": 1, "border-width": 2, "border-color": "data(color)", "border-opacity": 0.7 },
+      },
+      {
+        selector: "node.dim",
+        style: { "background-opacity": 0.08, "color": "rgba(100,116,139,0.1)" },
+      },
+      {
+        selector: "node.sel",
+        style: { "background-opacity": 1, "border-width": 2.5, "border-color": "data(color)", "border-opacity": 0.85 },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 0.6, "line-color": "rgba(255,255,255,0.1)",
+          "curve-style": "bezier", "opacity": 1,
+        },
+      },
+      {
+        selector: "edge[kind='system']",
+        style: { "line-color": "rgba(232,146,74,0.25)", "line-style": "dashed", "line-dash-pattern": [4, 5] },
+      },
+      {
+        selector: "edge[kind='agent']",
+        style: { "line-color": "rgba(62,207,184,0.2)" },
+      },
+      {
+        selector: "edge.hl",
+        style: { "width": 1.3, "line-color": "rgba(255,255,255,0.4)", "z-index": 10 },
+      },
+      {
+        selector: "edge[kind='system'].hl",
+        style: { "line-color": "rgba(232,146,74,0.6)" },
+      },
+      {
+        selector: "edge[kind='agent'].hl",
+        style: { "line-color": "rgba(62,207,184,0.55)" },
+      },
+      {
+        selector: "edge.dim",
+        style: { "opacity": 0.05 },
+      },
+    ],
+    layout: {
+      name: "cose",
+      animate: true,
+      animationDuration: 1000,
+      animationEasing: "ease-out",
+      refresh: 20,
+      fit: true,
+      padding: 80,
+      randomize: true,
+      componentSpacing: 100,
+      nodeRepulsion: () => 8000,
+      nodeOverlap: 24,
+      idealEdgeLength: () => 120,
+      edgeElasticity: () => 200,
+      nestingFactor: 1.2,
+      gravity: 60,
+      numIter: 1000,
+      initialTemp: 600,
+      coolingFactor: 0.95,
+      minTemp: 1,
+    },
+  });
+
+  // ── Interactions ───────────────────────────────────────────────────────────
+  const tip = document.getElementById("tip");
+
+  cy.on("mouseover", "node", e => {
+    const n = e.target;
+    const d = n.data();
+    const nbhd = n.closedNeighborhood();
+    cy.elements().not(nbhd).addClass("dim");
+    nbhd.removeClass("dim").addClass("hl");
+    nbhd.edges().addClass("hl").removeClass("dim");
+
+    const type = d.kind === "agent" ? "Agent" : (d.type||"recall").toUpperCase();
+    const acc  = d.access ? ` · ${d.access.replace("shared_","").replace("_","/")}` : "";
+    tip.innerHTML = `<strong>${d.label}</strong>${type}${acc}`;
+    tip.classList.add("show");
+    document.body.style.cursor = "pointer";
+  });
+
+  cy.on("mouseout", "node", () => {
+    cy.elements().removeClass("dim hl");
+    tip.classList.remove("show");
+    document.body.style.cursor = "";
+  });
+
+  cy.on("mousemove", e => {
+    if (e.originalEvent) {
+      tip.style.left = (e.originalEvent.clientX + 14) + "px";
+      tip.style.top  = (e.originalEvent.clientY - 8) + "px";
+    }
+  });
+
+  cy.on("tap", "node", e => {
+    const n  = e.target;
+    const d  = n.data();
+    cy.elements().removeClass("sel");
+    n.addClass("sel");
+    openPanel(d, n, cy);
+  });
+
+  cy.on("tap", e => {
+    if (e.target === cy) { closePanel(); cy.elements().removeClass("sel"); }
+  });
+
+  // Controls
+  document.getElementById("cin").onclick  = () => cy.animate({ zoom: cy.zoom() * 1.3 }, { duration: 180 });
+  document.getElementById("cout").onclick = () => cy.animate({ zoom: cy.zoom() * 0.77 }, { duration: 180 });
+  document.getElementById("cfit").onclick = () => cy.animate({ fit: { padding: 60 } }, { duration: 280 });
+
+  // ── Panel functions ────────────────────────────────────────────────────────
+  function openPanel(d, node, cy) {
+    const col = d.color || "#64748b";
+
+    // Kind badge
+    const pk = document.getElementById("pkind");
+    if (d.kind === "agent") {
+      pk.textContent = "Agent";
+      pk.style.cssText = "background:rgba(62,207,184,0.1);color:#3ecfb8;border:1px solid rgba(62,207,184,0.2)";
+    } else {
+      const t = (d.type||"recall").toUpperCase();
+      const bg = { SYSTEM:"rgba(232,146,74,0.1)", CORE:"rgba(107,163,245,0.1)", RECALL:"rgba(71,85,105,0.15)" };
+      pk.textContent = t;
+      pk.style.cssText = `background:${bg[t]||bg.RECALL};color:${col};border:1px solid ${col}44`;
+    }
+
+    document.getElementById("pname").textContent = d.label;
+
+    // Tags
+    const tags = [];
+    if (d.kind === "agent") {
+      const r = d.raw || {};
+      if (r.model) tags.push(r.model);
+      if (r.tools?.length) tags.push(`${r.tools.length} tools`);
+    } else {
+      if (d.access) tags.push(d.access.replace(/_/g," "));
+    }
+    document.getElementById("ptags").innerHTML = tags.map(t => `<span>${t}</span>`).join("");
+
+    // Content
+    document.getElementById("pcontent").textContent =
+      d.kind === "agent" ? (d.raw?.persona || "(no persona)") : (d.raw?.content || "(empty)");
+
+    // Neighbors
+    const connected = [];
+    node.connectedEdges().forEach(edge => {
+      const other = edge.source().id() === node.id() ? edge.target() : edge.source();
+      if (other.id() !== node.id()) {
+        connected.push({ id: other.id(), nd: other.data(), ek: edge.data("kind") });
+      }
+    });
+    const uniq = [...new Map(connected.map(x => [x.id, x])).values()];
+
+    document.getElementById("pnbrs").innerHTML = uniq.slice(0, 14).map(({ id, nd, ek }) => `
+      <div class="nbr" data-id="${id}">
+        <div class="nbr-dot" style="background:${nd.color||'#475569'}"></div>
+        <span class="nbr-kind">${ek}</span>
+        <span>${nd.label}</span>
+      </div>`).join("");
+
+    document.querySelectorAll(".nbr").forEach(el => {
+      el.addEventListener("click", () => {
+        const n2 = cy.getElementById(el.dataset.id);
+        if (n2.length) {
+          cy.elements().removeClass("sel");
+          n2.addClass("sel");
+          openPanel(n2.data(), n2, cy);
+          cy.animate({ center: { eles: n2 }, zoom: Math.max(cy.zoom(), 1.4) }, { duration: 300 });
+        }
+      });
+    });
+
+    document.getElementById("panel").classList.add("open");
+  }
+
+  function closePanel() {
+    document.getElementById("panel").classList.remove("open");
+  }
+
+  document.getElementById("panel-close").addEventListener("click", closePanel);
+
+})();
+</script>
+</body>
+</html>

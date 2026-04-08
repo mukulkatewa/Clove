@@ -426,8 +426,51 @@ async function cmdMemory(args: string[]): Promise<void> {
       console.log('')
       break
     }
+    case 'write':
+    case 'set': {
+      // clove memory write <name> <content> [--type core|system|recall] [--access shared_read|private|shared_readwrite]
+      const name = args[1]
+      const content = args[2]
+      if (!name || !content) {
+        console.log('Usage: clove memory write <name> "<content>" [--type core|system|recall] [--access shared_read|private|shared_readwrite]')
+        return
+      }
+      const typeFlag = args.indexOf('--type')
+      const accessFlag = args.indexOf('--access')
+      const type = typeFlag !== -1 ? args[typeFlag + 1] : 'core'
+      const access = accessFlag !== -1 ? args[accessFlag + 1] : 'shared_read'
+      const block = await api<{ id: string; name: string; type: string }>(
+        cfg.apiPort, '/api/memory', 'POST', { name, content, type, access }
+      )
+      if (block?.id) {
+        console.log(c.green(`  ✓ Stored [${block.type}] "${block.name}" (${block.id})`))
+      } else {
+        console.log(c.red('  ✗ Failed to write memory block'))
+      }
+      break
+    }
+    case 'delete':
+    case 'rm': {
+      // clove memory delete <id>
+      const id = args[1]
+      if (!id) { console.log('Usage: clove memory delete <mem_id>'); return }
+      const result = await api<{ success: boolean }>(cfg.apiPort, `/api/memory/${id}`, 'DELETE')
+      if (result?.success) {
+        console.log(c.green(`  ✓ Deleted ${id}`))
+      } else {
+        console.log(c.red(`  ✗ Not found or not owner: ${id}`))
+      }
+      break
+    }
     default:
-      console.log('Usage: clove memory [list|recall|stats] [agent] [query]')
+      console.log('Usage: clove memory [list|recall|stats|write|delete] ...')
+      console.log('  list                               List all memory blocks')
+      console.log('  recall <query>                     Search memory by keyword')
+      console.log('  write <name> "<content>"           Write a memory block')
+      console.log('    --type   core|system|recall      (default: core)')
+      console.log('    --access shared_read|private     (default: shared_read)')
+      console.log('  delete <mem_id>                    Delete a memory block by ID')
+      console.log('  stats                              Show memory statistics')
   }
 }
 
@@ -1919,7 +1962,7 @@ ${c.bold('Configure:')}
 
 ${c.bold('Observe:')}
   ${c.cyan('logs')} [N]                                   Recent audit entries
-  ${c.cyan('memory')} list|recall|stats [agent] [query]   Three-tier agent memory
+  ${c.cyan('memory')} list|recall|write|delete|stats        Three-tier agent memory
   ${c.cyan('store')} get|set <key> [value]                Key-value store
   ${c.cyan('policy')}                                     Policy recommendations
   ${c.cyan('privacy')} <text>                             PII scan

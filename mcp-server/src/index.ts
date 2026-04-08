@@ -18,28 +18,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type {
-  OAuthServerProvider,
-  AuthorizationParams,
-} from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type {
-  OAuthClientInformationFull,
-  OAuthTokens,
-  OAuthTokenRevocationRequest,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 
 const KERNEL_URL = process.env.CLOVE_KERNEL_URL || process.env.CLOVE_API_URL || "http://localhost:8080";
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : null;
-const MCP_KEY = process.env.CLOVE_MCP_KEY ?? "";
-
 // Warn on startup if using default localhost (likely not configured)
 if (!process.env.CLOVE_KERNEL_URL && !process.env.CLOVE_API_URL && !PORT) {
   console.error(`
@@ -1007,160 +990,34 @@ function buildServer(): McpServer {
   return server;
 }
 
-// ── OAuth provider ───────────────────────────────────────────────────────────
-//
-// Full OAuth 2.0 authorization server using the MCP SDK's OAuthServerProvider.
-// Uses authorization-code + PKCE flow (what Claude Code expects for HTTP MCP).
-// Auto-approves every authorization request — no browser consent UI needed.
-// The issued access token is CLOVE_MCP_KEY itself, so the kernel's auth is the
-// only real gate; revoking the env var immediately invalidates all sessions.
-
-class CloveClientsStore implements OAuthRegisteredClientsStore {
-  private clients = new Map<string, OAuthClientInformationFull>();
-
-  getClient(clientId: string) {
-    return this.clients.get(clientId);
-  }
-
-  registerClient(meta: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">) {
-    const client: OAuthClientInformationFull = {
-      ...meta,
-      client_id: randomUUID(),
-      client_id_issued_at: Math.floor(Date.now() / 1000),
-    };
-    this.clients.set(client.client_id, client);
-    return client;
-  }
-}
-
-class CloveOAuthProvider implements OAuthServerProvider {
-  clientsStore = new CloveClientsStore();
-
-  // auth-code store: code → { pkce challenge, redirect_uri, expiry }
-  private codes = new Map<string, {
-    codeChallenge: string;
-    redirectUri: string;
-    expiresAt: number;
-  }>();
-
-  /**
-   * Auto-approve: immediately redirect back with an auth code.
-   * No consent screen — this is a server-to-server API key, not a user identity.
-   */
-  async authorize(
-    _client: OAuthClientInformationFull,
-    params: AuthorizationParams,
-    res: Response,
-  ) {
-    const code = randomUUID();
-    this.codes.set(code, {
-      codeChallenge: params.codeChallenge,
-      redirectUri: params.redirectUri,
-      expiresAt: Date.now() + 60_000, // codes expire in 60 s
-    });
-    const redirect = new URL(params.redirectUri);
-    redirect.searchParams.set("code", code);
-    if (params.state) redirect.searchParams.set("state", params.state);
-    res.redirect(redirect.toString());
-  }
-
-  async challengeForAuthorizationCode(
-    _client: OAuthClientInformationFull,
-    authorizationCode: string,
-  ) {
-    const entry = this.codes.get(authorizationCode);
-    if (!entry) throw new InvalidGrantError("Unknown authorization code");
-    return entry.codeChallenge;
-  }
-
-  async exchangeAuthorizationCode(
-    _client: OAuthClientInformationFull,
-    authorizationCode: string,
-  ): Promise<OAuthTokens> {
-    const entry = this.codes.get(authorizationCode);
-    if (!entry || Date.now() > entry.expiresAt) {
-      this.codes.delete(authorizationCode);
-      throw new InvalidGrantError("Authorization code expired or invalid");
-    }
-    this.codes.delete(authorizationCode);
-    // Issue the static MCP key as the bearer token. This keeps the kernel's
-    // existing auth model intact and makes token rotation trivial (change env var).
-    return {
-      access_token: MCP_KEY,
-      token_type: "bearer",
-      // No expiry — the token is valid as long as the env var matches.
-    };
-  }
-
-  async exchangeRefreshToken(): Promise<OAuthTokens> {
-    // We don't issue refresh tokens, so this should never be called.
-    throw new InvalidGrantError("Refresh tokens are not supported");
-  }
-
-  async verifyAccessToken(token: string): Promise<AuthInfo> {
-    if (!MCP_KEY || token !== MCP_KEY) {
-      throw new InvalidTokenError("Invalid or missing access token");
-    }
-    return {
-      token,
-      clientId: "clove",
-      scopes: ["mcp"],
-    };
-  }
-}
-
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function main() {
   if (PORT) {
-    // HTTP mode — full OAuth 2.0 via MCP SDK
-    const issuerUrl = new URL(
-      process.env.PUBLIC_URL ?? `http://localhost:${PORT}`
-    );
-
-    const oauthProvider = new CloveOAuthProvider();
-
     const app = express();
+    app.set("trust proxy", 1);
     app.use(express.json());
 
-    // OAuth endpoints: /.well-known/*, /authorize, /token, /register, /revoke
-    // mcpAuthRouter mounts all of them automatically, unauthenticated where required.
-    app.use(mcpAuthRouter({
-      provider: oauthProvider,
-      issuerUrl,
-      serviceDocumentationUrl: new URL("https://github.com/aniiiiXD/clove-v2"),
-      scopesSupported: ["mcp"],
-      resourceName: "CLOVE MCP Server",
-    }));
-
-    // Health check — no auth
+    // Health check
     app.get("/health", (_req, res) => {
       res.json({ ok: true, kernel: KERNEL_URL, version: "2.0.0" });
     });
 
-    // MCP endpoint — protected by Bearer token validation
-    app.all(
-      "/mcp",
-      requireBearerAuth({
-        verifier: oauthProvider,
-        requiredScopes: ["mcp"],
-      }),
-      async (req: Request, res: Response) => {
-        const mcpServer = buildServer();
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: undefined, // stateless
-        });
-        res.on("close", () => transport.close());
-        await mcpServer.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-      }
-    );
+    // MCP endpoint — no auth (temporary)
+    app.all("/mcp", async (req: Request, res: Response) => {
+      const mcpServer = buildServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless
+      });
+      res.on("close", () => transport.close());
+      await mcpServer.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    });
 
     app.listen(PORT, () => {
       console.error(`CLOVE MCP Server (HTTP) listening on :${PORT}`);
       console.error(`Kernel:  ${KERNEL_URL}`);
-      console.error(`Issuer:  ${issuerUrl}`);
-      console.error(`Auth:    ${MCP_KEY ? "OAuth 2.0 enabled" : "WARNING: CLOVE_MCP_KEY not set — open access"}`);
+      console.error(`Auth:    DISABLED (temporary)`);
     });
   } else {
     // Stdio mode — local Claude Code / MCP host

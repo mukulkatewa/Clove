@@ -30,6 +30,7 @@ integrations/*/node_modules/
 node_modules/
 openclaw-provider/
 package-lock.json
+!mcp-server/package-lock.json
 report.md
 
 # Dashboard moved to frontend branch (clove-website repo)

@@ -587,7 +587,7 @@ bool Kernel::init() {
             *audit_logger_, *execution_logger_, *policy_recommender_,
             mcp_bridge_.get(), a2a_bridge_.get(), tunnel_bridge_.get(), world_engine_.get(),
             llm_queue_.get(), artifact_store_.get(), chain_store_.get(),
-            context_assembler_.get(), memory_block_store_.get(), openrouter_.get(),
+            context_assembler_.get(), memory_block_store_.get(), memory_block_db_.get(), openrouter_.get(),
             openclaw_manager_.get(), sandbox_manager_.get(),
             mailbox_registry_.get(), daemon_manager_.get(),
             anthropic_client_.get(),

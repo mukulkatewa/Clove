@@ -35,6 +35,7 @@ class AgentMailboxRegistry;
 class DaemonManager;
 class AnthropicClient;
 class StateStoreDb;
+class MemoryBlockDb;
 class JobQueue;
 class SupabaseSync;
 class WorkspaceDb;
@@ -65,6 +66,7 @@ struct ApiContext {
     ChainStore* chain_store;          // nullable
     ContextAssembler* assembler;      // nullable
     MemoryBlockStore* memory_blocks;  // nullable
+    MemoryBlockDb*    memory_block_db; // nullable — SQLite persistence for memory blocks
     OpenRouterClient* openrouter;     // nullable
     OpenClawManager* openclaw;       // nullable
     SandboxManager* sandbox_manager; // nullable
