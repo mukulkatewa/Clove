@@ -76,7 +76,7 @@ private:
     // HTTP helper — returns {success, status_code, body}
     struct HttpResponse {
         bool success = false;
-        int status_code = 0;
+        long status_code = 0;  // must be long — curl_easy_getinfo(CURLINFO_RESPONSE_CODE) writes a long*
         std::string body;
     };
     HttpResponse http_post(const std::string& path, const nlohmann::json& body);
