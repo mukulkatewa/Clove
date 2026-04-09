@@ -2199,6 +2199,79 @@ void ApiServer::setup_routes() {
         res.set_content(results.dump(), "application/json");
     });
 
+    // -----------------------------------------------------------------------
+    // Debug: POST to OpenRouter chat completions via raw curl (isolate crash)
+    // -----------------------------------------------------------------------
+    svr.Get("/api/test/chat", [this](const httplib::Request&, httplib::Response& res) {
+        json results;
+        try {
+            // Method 1: raw curl POST
+            CURL* curl = curl_easy_init();
+            if (!curl) {
+                results["error"] = "curl_easy_init failed";
+                res.set_content(results.dump(), "application/json");
+                return;
+            }
+            std::string response_body;
+            auto cb = +[](char* p, size_t s, size_t n, void* d) -> size_t {
+                static_cast<std::string*>(d)->append(p, s*n); return s*n; };
+
+            std::string api_key;
+            if (ctx_.openrouter && ctx_.openrouter->is_configured()) {
+                api_key = ctx_.openrouter->config().api_key;
+                results["has_key"] = true;
+                results["key_prefix"] = api_key.substr(0, 12) + "...";
+            } else {
+                results["has_key"] = false;
+                results["openrouter_ptr"] = (ctx_.openrouter != nullptr);
+                res.set_content(results.dump(), "application/json");
+                return;
+            }
+
+            std::string post_body = R"({"model":"google/gemini-2.0-flash-001","messages":[{"role":"user","content":"say hi"}],"max_tokens":5})";
+            struct curl_slist* headers = nullptr;
+            headers = curl_slist_append(headers, ("Authorization: Bearer " + api_key).c_str());
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+
+            curl_easy_setopt(curl, CURLOPT_URL, "https://openrouter.ai/api/v1/chat/completions");
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_body.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)post_body.size());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 20000L);
+            curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+            CURLcode rc = curl_easy_perform(curl);
+            long code = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            results["curl_rc"] = (int)rc;
+            results["http_status"] = (int)code;
+            results["curl_ok"] = (rc == CURLE_OK);
+            results["response_bytes"] = (int)response_body.size();
+            if (response_body.size() < 2000) {
+                try { results["response"] = json::parse(response_body); }
+                catch (...) { results["response_raw"] = response_body.substr(0, 500); }
+            }
+
+            // Method 2: via OpenRouterClient
+            results["method2_starting"] = true;
+            auto or_resp = ctx_.openrouter->chat("google/gemini-2.0-flash-001", "say hello");
+            results["method2_success"] = or_resp.success;
+            results["method2_content"] = or_resp.content;
+            results["method2_error"] = or_resp.error;
+
+        } catch (const std::exception& e) {
+            results["exception"] = e.what();
+        } catch (...) {
+            results["exception"] = "unknown non-std exception";
+        }
+        res.set_content(results.dump(), "application/json");
+    });
+
     // Run — full agent tool-calling loop (synchronous)
     // POST /api/run  {"goal": "...", "budget": 0.50, "tools": [...], "model": "..."}
     // -----------------------------------------------------------------------

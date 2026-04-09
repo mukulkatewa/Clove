@@ -383,7 +383,12 @@ function buildServer(): McpServer {
       budget: z.number().optional().describe("Default budget per run in USD"),
     },
     async ({ name, system_prompt, tools, model, budget }) =>
-      json(await kernel("/api/agent-defs", "POST", { name, system_prompt, tools, model, budget }))
+      json(await kernel("/api/agent-defs", "POST", {
+        name,
+        description: system_prompt.slice(0, 200),
+        action: { goal: system_prompt, tools: tools ?? [], model: model ?? "" },
+        budget: { per_run: budget ?? 0.5 },
+      }))
   );
 
   server.tool(
@@ -480,8 +485,8 @@ function buildServer(): McpServer {
     "List all active worlds — isolated multi-agent coordination environments.",
     {},
     async () => {
-      const r = await kernel<{ worlds: Array<{ id: number; name: string; member_count: number }> }>("/api/worlds");
-      return json(r.worlds);
+      const r = await kernel<Array<{ id: number; name: string; member_count: number }>>("/api/worlds");
+      return json(r);
     }
   );
 
