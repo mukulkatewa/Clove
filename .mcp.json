@@ -2,7 +2,7 @@
   "mcpServers": {
     "clove": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://mcp-production-07a6.up.railway.app/mcp", "--allow-http"]
+      "args": ["-y", "mcp-remote", "https://mcp-linux-production.up.railway.app/mcp", "--allow-http"]
     }
   }
 }

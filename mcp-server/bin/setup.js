@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOME = homedir();
-const HOSTED_URL = "https://mcp-production-07a6.up.railway.app/mcp";
+const HOSTED_URL = "https://mcp-linux-production.up.railway.app/mcp";
 const args = process.argv.slice(2);
 
 // ── MCP server config block (same across all clients) ─────────────────────
