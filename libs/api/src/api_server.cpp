@@ -2200,12 +2200,40 @@ void ApiServer::setup_routes() {
     });
 
     // -----------------------------------------------------------------------
-    // Debug: POST to OpenRouter chat completions via raw curl (isolate crash)
+    // Debug step 1: just check if OpenRouter key is loaded (no network call)
     // -----------------------------------------------------------------------
-    svr.Get("/api/test/chat", [this](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/test/key", [this](const httplib::Request&, httplib::Response& res) {
         json results;
+        results["openrouter_ptr"] = (ctx_.openrouter != nullptr);
+        if (ctx_.openrouter) {
+            results["is_configured"] = ctx_.openrouter->is_configured();
+            results["key_prefix"] = ctx_.openrouter->config().api_key.substr(0, 12) + "...";
+            results["base_url"] = ctx_.openrouter->config().base_url;
+            results["default_model"] = ctx_.openrouter->config().default_model;
+        }
+        results["anthropic_ptr"] = (ctx_.anthropic != nullptr);
+        if (ctx_.anthropic) {
+            results["anthropic_configured"] = ctx_.anthropic->is_configured();
+        }
+        res.set_content(results.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Debug step 2: raw curl POST to OpenRouter (no OpenRouterClient)
+    // -----------------------------------------------------------------------
+    svr.Get("/api/test/chat-raw", [this](const httplib::Request&, httplib::Response& res) {
+        json results;
+        results["step"] = "starting";
         try {
-            // Method 1: raw curl POST
+            std::string api_key;
+            if (ctx_.openrouter && ctx_.openrouter->is_configured()) {
+                api_key = ctx_.openrouter->config().api_key;
+            } else {
+                results["error"] = "no openrouter key";
+                res.set_content(results.dump(), "application/json");
+                return;
+            }
+            results["step"] = "curl_init";
             CURL* curl = curl_easy_init();
             if (!curl) {
                 results["error"] = "curl_easy_init failed";
@@ -2215,18 +2243,6 @@ void ApiServer::setup_routes() {
             std::string response_body;
             auto cb = +[](char* p, size_t s, size_t n, void* d) -> size_t {
                 static_cast<std::string*>(d)->append(p, s*n); return s*n; };
-
-            std::string api_key;
-            if (ctx_.openrouter && ctx_.openrouter->is_configured()) {
-                api_key = ctx_.openrouter->config().api_key;
-                results["has_key"] = true;
-                results["key_prefix"] = api_key.substr(0, 12) + "...";
-            } else {
-                results["has_key"] = false;
-                results["openrouter_ptr"] = (ctx_.openrouter != nullptr);
-                res.set_content(results.dump(), "application/json");
-                return;
-            }
 
             std::string post_body = R"({"model":"google/gemini-2.0-flash-001","messages":[{"role":"user","content":"say hi"}],"max_tokens":5})";
             struct curl_slist* headers = nullptr;
@@ -2242,12 +2258,14 @@ void ApiServer::setup_routes() {
             curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 20000L);
             curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
+            results["step"] = "curl_perform";
             CURLcode rc = curl_easy_perform(curl);
             long code = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
             curl_slist_free_all(headers);
             curl_easy_cleanup(curl);
 
+            results["step"] = "done";
             results["curl_rc"] = (int)rc;
             results["http_status"] = (int)code;
             results["curl_ok"] = (rc == CURLE_OK);
@@ -2256,18 +2274,37 @@ void ApiServer::setup_routes() {
                 try { results["response"] = json::parse(response_body); }
                 catch (...) { results["response_raw"] = response_body.substr(0, 500); }
             }
-
-            // Method 2: via OpenRouterClient
-            results["method2_starting"] = true;
-            auto or_resp = ctx_.openrouter->chat("google/gemini-2.0-flash-001", "say hello");
-            results["method2_success"] = or_resp.success;
-            results["method2_content"] = or_resp.content;
-            results["method2_error"] = or_resp.error;
-
         } catch (const std::exception& e) {
             results["exception"] = e.what();
         } catch (...) {
-            results["exception"] = "unknown non-std exception";
+            results["exception"] = "unknown";
+        }
+        res.set_content(results.dump(), "application/json");
+    });
+
+    // -----------------------------------------------------------------------
+    // Debug step 3: via OpenRouterClient::chat (the actual code path)
+    // -----------------------------------------------------------------------
+    svr.Get("/api/test/chat", [this](const httplib::Request&, httplib::Response& res) {
+        json results;
+        try {
+            if (!ctx_.openrouter || !ctx_.openrouter->is_configured()) {
+                results["error"] = "openrouter not configured";
+                res.set_content(results.dump(), "application/json");
+                return;
+            }
+            results["step"] = "calling_chat";
+            auto or_resp = ctx_.openrouter->chat("google/gemini-2.0-flash-001", "say hello");
+            results["step"] = "done";
+            results["success"] = or_resp.success;
+            results["content"] = or_resp.content;
+            results["error"] = or_resp.error;
+            results["model"] = or_resp.model_used;
+            results["tokens"] = or_resp.usage.total_tokens;
+        } catch (const std::exception& e) {
+            results["exception"] = e.what();
+        } catch (...) {
+            results["exception"] = "unknown";
         }
         res.set_content(results.dump(), "application/json");
     });
